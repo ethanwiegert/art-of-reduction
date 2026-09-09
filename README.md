@@ -1,4 +1,4 @@
-### art-of-reduction
+# art-of-reduction
 *Skills that drive agents to write **more simple code**, and eventually replace themselves where possible*
 
 ## Install
@@ -10,16 +10,16 @@ These skills exist to augment building software with AI.  They keep AI centered 
 
 While this was centered around writing code, you can use the `crafting-code` skill or a slightly modified version to drive this framework to do tasks beyond just writing code.  The other three skills are tailored to improve any workflow.
 
-# art-of-reduction
+### art-of-reduction
 This is the key skill that aims to force the agent into a 'state of mind' to reduce wherever possible and aim for the simple functional output.
 
-# strong-foundation
+### strong-foundation
 Compounds on top of the `art-of-reduction` skill to focus on only the goal without introducing more complexity or dependencies.
 
-# lazy-automate
+### lazy-automate
 Senior dev energe that aims to automate a problem where possible so you never have to deal with it again.
 
-# crafting-code
+### crafting-code
 A skill that combines `art-of-reduction` and `strong-foundation`, and finally `lazy-automate` with the goal of finishing a task and leaving it in a state better than it was before (in both the work and workflow).
 
 
