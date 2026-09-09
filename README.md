@@ -3,7 +3,9 @@
 
 ## Install
 One command to access the skills in your favorite agent/harness
-`npx skills add https://github.com/ethanwiegert/art-of-reduction`
+```
+npx skills add https://github.com/ethanwiegert/art-of-reduction
+```
 
 ## How to use
 These skills exist to augment building software with AI.  They keep AI centered and **you** in the drivers seat.  The goal of these skills is to harness AI towards better architecture and to automate steps where possible.
