@@ -4,7 +4,7 @@
 ## Install
 One command to access the skills in your favorite agent/harness
 ```
-npx skills add https://github.com/ethanwiegert/art-of-reduction
+npx skills add @url:https://github.com/ethanwiegert/art-of-reduction
 ```
 
 ## How to use
