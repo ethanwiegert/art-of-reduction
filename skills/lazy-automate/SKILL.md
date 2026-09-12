@@ -1,12 +1,50 @@
 ---
 name: lazy-automate
-description: Use when a task or workflow comes up a second time. Turn it into something deterministic so the user never has to think about it again.
+description: Use when the same work comes up twice. Compile it into something deterministic.
 ---
 
 # Instructions
 
-You're a lazy programmer that quickly finds a reason to automate a process after it's been given to you the second time. You look for ways to permanently solve a problem rather than adding complexity or letting the problem fester. Utilize the `tool-tracking.db` created by the `tool-tracking` skill, typically in `~/.art-of-reduction/`, only if it is present, and focus on tools that are heavily used, tasks that are repetitive, and especially functions performed over and over (parsing json, running an api call, looping through logic). Ground yourself in data, and focus exclusively on what you deem deterministic. The focus is to automate a process to the point where the user doesn't need to think about the task, instead it just gets done. The absolute goal is to even eliminate the need for your help or any other agents, and reduce a process down to a script or line of logic to be run wherever possible.
+The second time you do something, stop doing it. Turn it into a script, a hook, or a config change so it happens with no model in the loop. The goal is not a smarter agent; it is an agent that is needed less.
 
-Simultaneously, look to merge processes rather than branch out and introduce more complexity. Get to a point where you can understand things deterministically and make things simple.
+## Rule of two
 
-Go over a plan with the user, and aim to craft robust, clear, and concise skills or write simple scripts to run where possible.
+First time: do the work. Second time, or a clear repeat: build the artifact. Name the repetition you acted on.
+
+## Find candidates in data, not memory
+
+If `~/.art-of-reduction/tool-tracking.db` exists (the `tool-tracking` skill), read it:
+
+```
+python3 ~/.agents/skills/tool-tracking/scripts/report.py repeats
+python3 ~/.agents/skills/tool-tracking/scripts/report.py failures
+python3 ~/.agents/skills/tool-tracking/scripts/report.py sessions
+```
+
+`repeats` is the list to work from: the same tool called with the same normalized input across two or more sessions. Tool count is not a signal — read/grep/shell always dominate any count. Cross-session repetition is the signal.
+
+Without the database, look for: the same sequence of steps run for a new input; the same file edited the same way; the same manual check after every change.
+
+Do not automate parsing JSON, calling an API, or looping logic. Those are code-level concerns; they are not workflow automation, and deduplicating them is `art-of-reduction`'s job.
+
+## The artifact
+
+In order of preference:
+
+1. A shell command or one-line script the user runs (default).
+2. A small script committed into the project, with a test.
+3. A skill — only when the trigger is a judgment call, the input genuinely varies, and the workflow is worth the context it costs in every session.
+
+## What "deterministic" means here
+
+A runnable artifact that produces the same output for the same input, with no model in the loop and no user decision except its arguments. If a step still needs the agent to look at something and decide, it is not finished — reduce the step, or reduce the decision.
+
+## Confirm once
+
+Show the artifact and one worked example (input → output) before wiring it in. One confirmation, not a plan review. After that it runs unattended.
+
+## Pitfalls
+
+- An automation the user has to remember to run is not automation. Put it where the work already happens — a hook, a make target, a project script — instead of documenting it in a README.
+- Twice with *different* inputs is not a repetition; the rule of two is a floor, not a trigger on its own.
+- Prefer extending an existing script or skill over adding a new one. Artifact sprawl is the same problem one level up.

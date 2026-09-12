@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/REPLACE/WITH/ABSOLUTE/PATH/hooks/claude-code.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
