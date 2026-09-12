@@ -6,7 +6,7 @@
 --   ts          UTC ISO-8601 with milliseconds, e.g. 2026-09-11T21:04:05.123Z
 --   session_id  harness session/thread id; opaque, '' when the harness has none
 --   harness     which agent wrote the row: hermes | claude_code | codex | cursor
---   tool        harness tool name; 'shell'/'edit' when the payload carries none
+--   tool        harness tool name; 'unknown' when the payload carries none
 --   tool_input  JSON-encoded arguments, redacted then truncated
 --   tool_output JSON-encoded (or raw) result, redacted then truncated
 --   status      'success' | 'error' | 'unknown'
@@ -14,6 +14,9 @@
 --
 -- One row per tool call, from every harness that shares this database, which is
 -- why session_id and harness are separate columns.
+
+-- Several harnesses write while report.py reads; WAL keeps readers from blocking writers.
+PRAGMA journal_mode = WAL;
 
 CREATE TABLE IF NOT EXISTS tool_calls (
     id          INTEGER PRIMARY KEY,

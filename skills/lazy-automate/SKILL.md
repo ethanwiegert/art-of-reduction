@@ -13,12 +13,12 @@ First time: do the work. Second time, or a clear repeat: build the artifact. Nam
 
 ## Find candidates in data, not memory
 
-If `~/.art-of-reduction/tool-tracking.db` exists (the `tool-tracking` skill), read it:
+If `~/.art-of-reduction/tool-tracking.db` exists (the `tool-tracking` skill creates it), read it with that skill's `scripts/report.py`:
 
 ```
-python3 ~/.agents/skills/tool-tracking/scripts/report.py repeats
-python3 ~/.agents/skills/tool-tracking/scripts/report.py failures
-python3 ~/.agents/skills/tool-tracking/scripts/report.py sessions
+python3 <tool-tracking>/scripts/report.py repeats
+python3 <tool-tracking>/scripts/report.py failures
+python3 <tool-tracking>/scripts/report.py sessions
 ```
 
 `repeats` is the list to work from: the same tool called with the same normalized input across two or more sessions. Tool count is not a signal — read/grep/shell always dominate any count. Cross-session repetition is the signal.

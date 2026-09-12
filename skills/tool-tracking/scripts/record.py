@@ -14,8 +14,6 @@ harnesses log and ignore.
 Environment overrides:
     AOR_HOME         store directory (default ~/.art-of-reduction)
     AOR_TRUNCATE     max characters kept per input/output field (default 2000)
-    AOR_RECORD_MODE  'sqlite' (default) or 'jsonl' to append a line instead of
-                     inserting; drain later with `report.py import`
 """
 from __future__ import annotations
 
@@ -30,8 +28,6 @@ AOR_HOME = os.environ.get("AOR_HOME") or os.path.join(
     os.path.expanduser("~"), ".art-of-reduction"
 )
 DB_PATH = os.path.join(AOR_HOME, "tool-tracking.db")
-JSONL_PATH = os.path.join(AOR_HOME, "tool-calls.jsonl")
-RECORD_MODE = (os.environ.get("AOR_RECORD_MODE") or "sqlite").strip().lower()
 try:
     TRUNCATE = max(0, int(os.environ.get("AOR_TRUNCATE") or 2000))
 except ValueError:
@@ -65,31 +61,17 @@ REDACTIONS = (
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}"), "Bearer [redacted]"),
 )
 
-HARNESS_ALIASES = {
-    "claude-code": "claude_code",
-    "claudecode": "claude_code",
-    "claude": "claude_code",
-    "codex-cli": "codex",
-    "cursor-cli": "cursor",
-    "openai-codex": "codex",
-}
-
 
 def normalize_harness(value: str) -> str:
-    value = (value or "").strip().lower().replace(" ", "_")
-    value = HARNESS_ALIASES.get(value, value)
-    return value.replace("-", "_") or "unknown"
+    return (value or "").strip().lower().replace("-", "_") or "unknown"
 
 
 def pick(payload: dict, *names):
-    """First non-empty value for any name, checked at top level then in `extra`."""
-    extra = payload.get("extra")
-    sources = [payload] + ([extra] if isinstance(extra, dict) else [])
+    """First non-empty value for any name at the top level."""
     for name in names:
-        for source in sources:
-            value = source.get(name)
-            if value not in (None, "", [], {}):
-                return value
+        value = payload.get(name)
+        if value not in (None, "", [], {}):
+            return value
     return None
 
 
@@ -111,20 +93,23 @@ def clean(value) -> str:
     return text[:TRUNCATE]
 
 
-def map_status(raw, error, event: str, has_tool: bool) -> str:
-    if raw is None:
-        if error or event.lower().endswith(("failure", "error")):
-            return "error"
-        return "success" if has_tool else "unknown"
-    value = str(raw).strip().lower()
-    if value in {"ok", "passed", "success", "succeeded", "completed", "complete"}:
-        return "success"
-    if value in {"fail", "failed", "error", "errored", "blocked", "denied"}:
+def map_status(raw, error, event: str, harness: str) -> str:
+    if error or event.lower().endswith("failure"):
         return "error"
-    return "unknown"
+    if raw is not None:
+        value = str(raw).strip().lower()
+        if value in {"ok", "passed", "success", "succeeded", "completed", "complete"}:
+            return "success"
+        if value in {"fail", "failed", "error", "errored", "blocked", "denied"}:
+            return "error"
+        return "unknown"
+    # Codex fires PostToolUse for failed calls too, with no failure field
+    # (openai/codex#34289); only hooks that fire on success alone may claim it.
+    return "success" if harness in {"claude_code", "cursor"} else "unknown"
 
 
 def map_row(payload: dict, harness: str) -> dict:
+    harness = normalize_harness(harness)
     event = str(payload.get("hook_event_name") or payload.get("hook_event") or "")
     tool = pick(payload, "tool_name")
     tool_input = pick(payload, "tool_input", "tool_arguments", "args")
@@ -136,33 +121,20 @@ def map_row(payload: dict, harness: str) -> dict:
     status_raw = pick(payload, "status")
     error = pick(payload, "error_message", "error", "error_type")
 
-    # Cursor's post hooks are per-surface rather than per-tool: afterShellExecution
-    # and afterFileEdit carry the payload directly, with no tool_name/tool_input.
-    if tool is None:
-        if pick(payload, "command") is not None:
-            tool = "shell"
-            tool_input = {"command": pick(payload, "command")}
-        elif pick(payload, "file_path") is not None:
-            tool = "edit"
-            tool_input = {
-                "file_path": pick(payload, "file_path"),
-                "edits": pick(payload, "edits") or [],
-            }
-
     try:
         duration_ms = int(float(duration)) if duration is not None else None
     except (TypeError, ValueError):
         duration_ms = None
 
+    now = datetime.now(timezone.utc)
     return {
-        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") 
-        + f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z",
+        "ts": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "session_id": as_text(session_id)[:200],
-        "harness": normalize_harness(harness),
+        "harness": harness,
         "tool": (as_text(tool) or "unknown")[:120],
         "tool_input": clean(tool_input),
         "tool_output": clean(tool_output),
-        "status": map_status(status_raw, error, event, tool is not None),
+        "status": map_status(status_raw, error, event, harness),
         "duration_ms": duration_ms,
     }
 
@@ -178,10 +150,6 @@ def ensure_schema(con: sqlite3.Connection) -> None:
 
 def write(row: dict) -> None:
     os.makedirs(AOR_HOME, exist_ok=True)
-    if RECORD_MODE == "jsonl":
-        with open(JSONL_PATH, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-        return
     con = sqlite3.connect(DB_PATH, timeout=5)
     try:
         con.execute("PRAGMA busy_timeout = 5000")

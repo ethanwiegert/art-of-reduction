@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # One-shot setup for the tool-call log.
 #
-#   ./install.sh                 # create the store + print the hook block
-#   ./install.sh hermes          # ... and write a ready-to-paste snippet
-#   ./install.sh claude_code     # ... and emit a merged settings file
+#   ./install.sh                 # create the store + list harnesses
+#   ./install.sh hermes          # print the YAML block to merge
+#   ./install.sh claude_code     # print the JSON fragment to merge
 #   ./install.sh codex
 #   ./install.sh cursor
 #   ./install.sh none            # no native hook: env vars for a custom wrapper
 #
-# Idempotent: re-running never drops data and never overwrites an existing
-# config file - it writes next to it and prints the merge line.
+# Idempotent: re-running never drops data and never writes into a harness config;
+# it prints the fragment for you to merge. Only the database is created.
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"      # .../tool-tracking/scripts
@@ -17,6 +17,7 @@ ROOT="$(cd "$SKILL_DIR/.." && pwd)"             # .../tool-tracking
 AOR_HOME="${AOR_HOME:-$HOME/.art-of-reduction}"
 HARNESS="${1:-print}"
 DB="$AOR_HOME/tool-tracking.db"
+RECORD="$SKILL_DIR/record.py"
 PY=python3
 command -v "$PY" >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 
@@ -29,88 +30,65 @@ con.executescript(open(schema, encoding="utf-8").read())
 con.commit()
 print(f"store ready: {db}")
 PY
-chmod +x "$ROOT/hooks/"*.sh "$SKILL_DIR/"*.py
 
 hook_block() {
   cat <<EOF
 hooks:
   post_tool_call:
     - matcher: ".*"
-      command: "$PY $ROOT/hooks/hermes.sh"
+      command: "$PY $RECORD --harness hermes"
       timeout: 10
 EOF
 }
 
-emit_json() { # $1 = harness, $2 = script
-  "$PY" - "$ROOT/hooks/$2" "$AOR_HOME/hook.$1.json" <<'PY'
+# Claude Code and Codex share this JSON shape: a "hooks" object mapping event
+# names to matcher blocks. Print the fragment and where it goes; never write the
+# harness config ourselves.
+emit_hooks() { # $1 = harness, $2 = target, rest = event names
+  "$PY" - "$RECORD" "$1" "$2" "${@:3}" <<'PY'
 import json, sys
-script, out = sys.argv[1], sys.argv[2]
-doc = {"PostToolUse": [{"matcher": "", "hooks": [
-    {"type": "command", "command": script, "timeout": 10}]}]}
-if "codex" in out:
-    doc = {"description": "Record every tool call into the shared art-of-reduction log.",
-           "hooks": doc}
-with open(out, "w", encoding="utf-8") as fh:
-    json.dump(doc, fh, indent=2)
-    fh.write("\n")
-print(out)
+record, harness, target, events = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+entry = {"matcher": "", "hooks": [
+    {"type": "command", "command": f"python3 {record} --harness {harness}", "timeout": 10}]}
+print(f'Merge this fragment under the top-level "hooks" key of {target}:\n')
+print(json.dumps({event: [entry] for event in events}, indent=2))
 PY
 }
 
 case "$HARNESS" in
   hermes)
-    SCRIPT="$ROOT/hooks/hermes.sh"
-    mkdir -p "$HOME/.hermes/agent-hooks"
-    ln -sf "$SCRIPT" "$HOME/.hermes/agent-hooks/aor-record.sh"
-    hook_block > "$AOR_HOME/hermes-hooks.snippet.yaml"
-    cat <<EOF
-Wrote $AOR_HOME/hermes-hooks.snippet.yaml
+    cat <<'EOF'
+Merge this block under the existing `hooks:` key in ~/.hermes/config.yaml,
+restart Hermes, then approve the one-time consent prompt on the first tool call:
 
-Merge those lines under the existing \`hooks:\` key in ~/.hermes/config.yaml,
-then restart Hermes. The first tool call raises a one-time consent prompt for
-the hook - approve it and that is the whole setup.
 EOF
+    hook_block
     ;;
   claude_code)
-    out="$(emit_json claude_code claude-code.sh)"
-    cat <<EOF
-Wrote $out
-
-Merge its PostToolUse entry into the "hooks" object of ~/.claude/settings.json
-(project-wide) or .claude/settings.json (this repo only):
-    python3 - <<'PY'
-    import json, pathlib
-    target, add = pathlib.Path.home()/".claude/settings.json", json.load(open("$out"))
-    target.parent.mkdir(parents=True, exist_ok=True)
-    cfg = json.loads(target.read_text()) if target.exists() else {}
-    cfg.setdefault("hooks", {}).setdefault("PostToolUse", []).extend(add["PostToolUse"])
-    target.write_text(json.dumps(cfg, indent=2))
-    PY
-EOF
+    emit_hooks claude_code "~/.claude/settings.json (or .claude/settings.json for this repo only)" PostToolUse PostToolUseFailure
     ;;
   codex)
-    out="$(emit_json codex codex.sh)"
-    cat <<EOF
-Wrote $out
+    emit_hooks codex "~/.codex/hooks.json" PostToolUse
+    cat <<'EOF'
 
-Run \`/hooks\` in Codex to review and trust the new hook (Codex skips untrusted
-hooks), or merge the entry into ~/.codex/hooks.json yourself.
+Run `/hooks` in Codex to review and trust the new hook (Codex skips untrusted
+hooks) before restarting it.
 EOF
     ;;
   cursor)
-    "$PY" - "$AOR_HOME/hook.cursor.json" <<PY
-import json, pathlib, sys
-template = json.load(open("$ROOT/hooks/cursor.json"))
-template["hooks"]["postToolUse"] = [{"command": "$ROOT/hooks/cursor.sh"}]
-dest = pathlib.Path(sys.argv[1])
-dest.write_text(json.dumps(template, indent=2) + "\n")
-print(dest)
+    "$PY" - "$RECORD" <<'PY'
+import json, sys
+command = f"python3 {sys.argv[1]} --harness cursor"
+print("Merge this into .cursor/hooks.json (or ~/.cursor/hooks.json for all projects):\n")
+print(json.dumps({"version": 1, "hooks": {
+    "postToolUse": [{"command": command}],
+    "postToolUseFailure": [{"command": command}],
+}}, indent=2))
 PY
-    cat <<EOF
+    cat <<'EOF'
 
-Copy it to .cursor/hooks.json in the project (or ~/.cursor/hooks.json for all
-projects). Cursor resolves relative command paths against the hooks.json file,
-so the absolute path above is what you want.
+Cursor resolves relative command paths against the hooks.json file, so the
+absolute path above is what you want.
 EOF
     ;;
   none)
@@ -120,18 +98,12 @@ payload automatically:
 
     export AOR_HARNESS=your_harness      # or: record.py --harness your_harness
     export AOR_HOME="$AOR_HOME"
-    # every tool call:  printf '%s' "\$PAYLOAD" | $PY $SKILL_DIR/scripts/record.py
-
-If a synchronous write ever shows up in your latency, set AOR_RECORD_MODE=jsonl
-to append instead of inserting, then drain the queue when idle:
-    $PY $SKILL_DIR/scripts/report.py import
+    # every tool call:  printf '%s' "\$PAYLOAD" | $PY $RECORD
 EOF
     ;;
   *)
-    hook_block
     cat <<EOF
-
-Pass a harness name to write the config for it:
+Pass a harness name to print the config for it:
     $0 hermes | claude_code | codex | cursor | none
 EOF
     ;;
@@ -140,5 +112,5 @@ esac
 cat <<EOF
 
 Nothing here is readable until calls accumulate. Check with:
-    $PY $SKILL_DIR/scripts/report.py
+    $PY $SKILL_DIR/report.py
 EOF
