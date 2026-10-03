@@ -42,7 +42,7 @@ python3 skills/tool-tracking/scripts/report.py
 - **Schema:** `skills/tool-tracking/schema.sql` — `tool_calls` with `ts` (UTC), `session_id`, `harness`, `tool`, `tool_input`, `tool_output`, `status`, `duration_ms`, indexed by tool, session, time, and status.
 - **Supported harnesses:** Hermes (`post_tool_call`), Claude Code (`PostToolUse` / `PostToolUseFailure`), Codex (`PostToolUse`), Cursor (`postToolUse` / `postToolUseFailure`). Anything else: point a wrapper at `scripts/record.py`, which maps payloads field-by-field.
 - **Stored in plaintext.** Arguments and results are redacted for obvious secrets and truncated to 2000 characters each, but they are still written to a local unencrypted database. Retention is yours: delete rows or the file.
-- **Shared across a team:** `scripts/serve.py` takes the same hook payloads over HTTP (Claude Code `type: "http"` hooks), so many agents write one store. Redaction runs server-side; a bearer token is required beyond localhost.
+- **Shared across a team:** `scripts/serve.py` takes the same hook payloads over HTTP, so every agent writes one store. Any harness's hook forwards there when `AOR_INGEST_URL` is set; Claude Code can also POST directly with a `type: "http"` hook. Redaction runs server-side; a bearer token is required beyond localhost.
 - **It fails open.** Logging breaks; your agent never does.
 
 ## Requirements

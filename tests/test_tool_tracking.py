@@ -207,6 +207,22 @@ class ServeTests(TempHome):
         self.assertIn("gh pr checks", row["tool_input"])
         self.assertNotIn("ghp_abcdefghijklmnop", row["tool_input"])
 
+    def test_record_forwards_any_harness(self):
+        local = self.home / "client"
+        env = {**os.environ, "AOR_HOME": str(local), "AOR_INGEST_URL": self.url,
+               "AOR_INGEST_TOKEN": "t0k"}
+        for harness, tool in (("codex", "shell"), ("cursor", "Shell"), ("hermes", "terminal")):
+            out = subprocess.run(
+                [sys.executable, str(RECORD), "--harness", harness], capture_output=True,
+                text=True, env=env,
+                input=json.dumps({"session_id": harness, "tool_name": tool,
+                                  "tool_input": {"command": "npm test"}}),
+            )
+            self.assertEqual((out.returncode, out.stdout.strip(), out.stderr), (0, "{}", ""))
+        rows = read_rows(self.home)
+        self.assertEqual([r["harness"] for r in rows], ["codex", "cursor", "hermes"])
+        self.assertFalse(local.exists())
+
     def test_refusals_write_nothing(self):
         self.assertEqual(self.post("/hook/claude_code", b"{}", token=None), 401)
         self.assertEqual(self.post("/hook/claude_code", b"{}", token="wrong"), 401)

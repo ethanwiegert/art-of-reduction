@@ -14,6 +14,9 @@ harnesses log and ignore.
 Environment overrides:
     AOR_HOME         store directory (default ~/.art-of-reduction)
     AOR_TRUNCATE     max characters kept per input/output field (default 2000)
+    AOR_INGEST_URL   send the payload to a shared serve.py instead of the local
+                     store; it maps and redacts on arrival
+    AOR_INGEST_TOKEN bearer token for AOR_INGEST_URL
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ import os
 import re
 import sqlite3
 import sys
+import urllib.request
 from datetime import datetime, timezone
 
 AOR_HOME = os.environ.get("AOR_HOME") or os.path.join(
@@ -32,6 +36,8 @@ try:
     TRUNCATE = max(0, int(os.environ.get("AOR_TRUNCATE") or 2000))
 except ValueError:
     TRUNCATE = 2000
+
+INGEST_URL = os.environ.get("AOR_INGEST_URL", "").rstrip("/")
 
 SCHEMA_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), os.pardir, "schema.sql"
@@ -174,6 +180,19 @@ def write(row: dict) -> None:
         con.close()
 
 
+def forward(payload: dict, harness: str) -> None:
+    request = urllib.request.Request(
+        f"{INGEST_URL}/hook/{normalize_harness(harness)}",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    token = os.environ.get("AOR_INGEST_TOKEN")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    urllib.request.urlopen(request, timeout=3).close()
+
+
 def main(argv: list) -> None:
     harness = ""
     for index, arg in enumerate(argv):
@@ -185,7 +204,10 @@ def main(argv: list) -> None:
     payload = json.loads(raw) if raw.strip() else {}
     if not isinstance(payload, dict):
         payload = {"tool_output": payload}
-    write(map_row(payload, harness))
+    if INGEST_URL:
+        forward(payload, harness)
+    else:
+        write(map_row(payload, harness))
 
 
 if __name__ == "__main__":

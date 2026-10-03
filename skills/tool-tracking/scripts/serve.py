@@ -3,7 +3,8 @@
 
 record.py is a per-machine hook. This serves the same mapping and redaction
 over HTTP, so a team's harnesses POST to one store instead of each keeping
-their own. Claude Code calls it natively with a `type: "http"` hook.
+their own. Claude Code calls it natively with a `type: "http"` hook; every other
+harness keeps its usual record.py command hook with AOR_INGEST_URL set.
 
     python3 serve.py                      # 127.0.0.1:8787, prints the hook fragment
     python3 serve.py --host 0.0.0.0 --port 8787
@@ -84,9 +85,11 @@ def main(argv: list) -> None:
         sys.exit("refusing to listen beyond localhost without AOR_INGEST_TOKEN")
     server = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{host}:{server.server_port}"
-    print('Merge under "hooks" in each agent\'s ~/.claude/settings.json'
+    print('Claude Code: merge under "hooks" in ~/.claude/settings.json'
           " (swap in the address agents reach this host on):\n")
     print(fragment(url))
+    print("\nAny other agent: export AOR_INGEST_URL (and AOR_INGEST_TOKEN) where it"
+          " runs, then use the normal `install.sh <harness>` hook; record.py forwards here.")
     print(f"\nstore: {record.DB_PATH}\nlistening: {url}/hook/<harness>", flush=True)
     try:
         server.serve_forever()

@@ -29,7 +29,13 @@ The log answers one question: what work does this agent repeat? One SQLite file,
 
 ### One log for a whole team
 
-Run `python3 scripts/serve.py` on one host instead of the installer. It prints a Claude Code `type: "http"` hook fragment; every agent that merges it POSTs to that one store, with the same mapping and redaction as `record.py`, applied server-side. Beyond localhost it refuses to start without `AOR_INGEST_TOKEN`, and the fragment sends that token as a bearer header. Other harnesses POST their hook JSON to `/hook/<harness>`.
+Run `python3 scripts/serve.py` on one host. Every harness writes to that one store, with the same mapping and redaction as `record.py`, applied server-side:
+
+- **Any harness** (Hermes, Codex, Cursor, a custom wrapper): set `AOR_INGEST_URL` (and `AOR_INGEST_TOKEN`) in the environment the agent runs in, then set up its hook exactly as above. `record.py` forwards the payload instead of writing locally.
+- **Claude Code** can skip `record.py`: paste the `type: "http"` fragment `serve.py` prints.
+- **Anything that can POST JSON:** `POST /hook/<harness>` with its hook payload as the body.
+
+Beyond localhost it refuses to start without `AOR_INGEST_TOKEN`; clients send it as `Authorization: Bearer`.
 
 No hook support (`install.sh none`)? Point whatever wrapper you have at `scripts/record.py`: it reads a JSON payload on stdin and takes `--harness <name>`.
 
