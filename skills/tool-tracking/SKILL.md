@@ -27,6 +27,10 @@ The log answers one question: what work does this agent repeat? One SQLite file,
    python3 scripts/report.py tools
    ```
 
+### One log for a whole team
+
+Run `python3 scripts/serve.py` on one host instead of the installer. It prints a Claude Code `type: "http"` hook fragment; every agent that merges it POSTs to that one store, with the same mapping and redaction as `record.py`, applied server-side. Beyond localhost it refuses to start without `AOR_INGEST_TOKEN`, and the fragment sends that token as a bearer header. Other harnesses POST their hook JSON to `/hook/<harness>`.
+
 No hook support (`install.sh none`)? Point whatever wrapper you have at `scripts/record.py`: it reads a JSON payload on stdin and takes `--harness <name>`.
 
 ## Reading it

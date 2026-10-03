@@ -8,12 +8,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TOOL = ROOT / "skills" / "tool-tracking"
 RECORD = TOOL / "scripts/record.py"
 REPORT = TOOL / "scripts/report.py"
 INSTALL = TOOL / "scripts/install.sh"
+SERVE = TOOL / "scripts/serve.py"
 SCHEMA = TOOL / "schema.sql"
 TS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
@@ -160,3 +163,59 @@ class InstallTests(TempHome):
                 self.assertIn(f"{RECORD} --harness {harness}", out.stdout)
                 self.assertTrue((home / "tool-tracking.db").exists())
                 self.assertEqual([p.name for p in home.iterdir()], ["tool-tracking.db"])
+
+
+class ServeTests(TempHome):
+    def setUp(self):
+        super().setUp()
+        self.proc = subprocess.Popen(
+            [sys.executable, str(SERVE), "--port", "0"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, env={**os.environ, "AOR_HOME": str(self.home), "AOR_INGEST_TOKEN": "t0k"},
+        )
+        lines = []
+        for line in self.proc.stdout:
+            lines.append(line)
+            if line.startswith("listening:"):
+                self.url = line.split()[1].rsplit("/hook", 1)[0]
+                break
+        self.banner = "".join(lines)
+
+    def tearDown(self):
+        self.proc.kill()
+        self.proc.wait()
+        self.proc.stdout.close()
+        super().tearDown()
+
+    def post(self, path, body, token="t0k"):
+        req = urllib.request.Request(self.url + path, data=body, method="POST")
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status
+        except urllib.error.HTTPError as err:
+            return err.code
+
+    def test_claude_code_http_hook(self):
+        payload = {"hook_event_name": "PostToolUse", "session_id": "s1", "tool_name": "Bash",
+                   "tool_input": {"command": "gh pr checks 12 --token ghp_abcdefghijklmnop"}}
+        self.assertEqual(self.post("/hook/claude_code", json.dumps(payload).encode()), 204)
+        row = read_rows(self.home)[0]
+        self.assertEqual((row["harness"], row["tool"], row["session_id"], row["status"]),
+                         ("claude_code", "Bash", "s1", "success"))
+        self.assertIn("gh pr checks", row["tool_input"])
+        self.assertNotIn("ghp_abcdefghijklmnop", row["tool_input"])
+
+    def test_refusals_write_nothing(self):
+        self.assertEqual(self.post("/hook/claude_code", b"{}", token=None), 401)
+        self.assertEqual(self.post("/hook/claude_code", b"{}", token="wrong"), 401)
+        self.assertEqual(self.post("/elsewhere", b"{}"), 404)
+        self.assertEqual(self.post("/hook/claude_code", b"not json"), 400)
+        self.assertEqual(self.post("/hook/claude_code", b"[1]"), 400)
+        self.assertFalse((self.home / "tool-tracking.db").exists())
+
+    def test_banner_prints_hook_fragment(self):
+        self.assertIn('"type": "http"', self.banner)
+        self.assertIn("/hook/claude_code", self.banner)
+        self.assertIn("Bearer $AOR_INGEST_TOKEN", self.banner)
