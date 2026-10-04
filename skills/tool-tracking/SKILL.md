@@ -50,7 +50,7 @@ python3 scripts/report.py sessions        # outlier session sizes
 
 Reports fold harness tool names into kinds (`shell`, `read`, `edit`, `search`, `web`) so repeated work counts once across harnesses; the raw name is still in the `tool` column.
 
-`repeats` is the section to act on; `lazy-automate` consumes it. To look up specific calls (one session, a failure, a command) use the `tool-log-search` skill.
+`repeats` is the section to act on; `lazy-automate` consumes it. It groups calls that are identical once paths, numbers, ids, model-written `description` fields and output trimming (`2>&1`, `| tail -n 30`) are folded away, so variants of the same work (`cd x && npm test`, extra flags) count separately: check `query.py search --input "<command>"` before deciding something is rare. Its `errors` column flags a repeated call that keeps failing; script the call that works, not that one. To look up specific calls (one session, a failure, a command) use the `tool-log-search` skill.
 
 ## What is stored — say this to the user
 
@@ -61,5 +61,6 @@ Arguments and results go to disk in plaintext, redacted for obvious secrets (pri
 ## Pitfalls
 
 - The hook fires synchronously on every tool call and **fails open**: a missing `python3`, a moved skill directory, or an unwritable database degrades to no logging, never to a broken agent. Silence is the failure mode — check `calls` above instead of assuming it is recording.
-- Harnesses disagree about payloads. Not every one reports a duration or a failing-call status: `duration_ms` is NULL and `status` is `unknown` when the payload does not say. Do not read those as measurements.
+- Harnesses disagree about payloads. Not every one reports a duration or a failing-call status: `duration_ms` is NULL and `status` is `unknown` when the payload does not say. Do not read those as measurements. Codex is the main case: no duration, no status, and calls it counts as failed never fire the hook, so its rows are `unknown` and its failures are missing. `report.py failures` shows `unknown` per harness and leaves it out of `fail%`.
+- `status` is the tool's own verdict, not the work's: `npm test | tail` exits with `tail`'s code, so a failing test run piped through it is stored as `success`. Read `tool_output` before trusting a success.
 - Several harnesses write the same file. Locks and `busy_timeout` are set, but keep a shared store on a local disk, never a network mount.

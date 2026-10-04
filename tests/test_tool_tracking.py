@@ -96,6 +96,29 @@ class RecordTests(TempHome):
         for kept in ("mysql", "git clone https://user:", "example.com/repo", "X-Api-Key"):
             self.assertIn(kept, blob)
 
+    def test_redaction_found_in_sandbox_runs(self):
+        # Shapes real agents read back from config files during sandbox runs.
+        text = ('smtp:\n  password: Tr0ub4dor&3\nwebhook_token: whk_9f8e7d\n'
+                'export DB_PASSWORD="two words"\nhttps://x/?token=abc123&page=2\n'
+                '{"max_tokens": 4096, "token_count": 7, "input_tokens": 12}')
+        run_record({"tool_name": "Read", "tool_response": text}, "claude_code", self.home)
+        blob = read_rows(self.home)[0]["tool_output"]
+        for leaked in ("Tr0ub4dor", "&3", "whk_9f8e7d", "two words", "abc123"):
+            self.assertNotIn(leaked, blob)
+        for kept in ("page=2", "4096", '"token_count": 7', "12"):
+            self.assertIn(kept, blob)
+
+    def test_hermes_fields_nested_under_extra(self):
+        # Hermes shell hooks promote only tool_name/args/session_id; the rest is in `extra`.
+        run_record({"hook_event_name": "post_tool_call", "tool_name": "terminal",
+                    "tool_input": {"command": "make test"}, "session_id": "sess_1",
+                    "extra": {"result": '{"output": "No rule", "exit_code": 2}',
+                              "duration_ms": 250, "status": "error", "error_type": "tool_error"}},
+                   "hermes", self.home)
+        row = read_rows(self.home)[0]
+        self.assertEqual((row["status"], row["duration_ms"], row["session_id"]), ("error", 250, "sess_1"))
+        self.assertIn("No rule", row["tool_output"])
+
     def test_failure_message_kept_as_output(self):
         run_record({"hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
                     "error": "command not found: gh"}, "claude_code", self.home)
@@ -143,6 +166,27 @@ class ReportTests(TempHome):
         )
         self.assertEqual(limited.returncode, 0, limited.stderr)
 
+    def test_repeats_ignore_prose_and_output_trimming(self):
+        con = sqlite3.connect(str(self.home / "tool-tracking.db"))
+        con.executescript(SCHEMA.read_text())
+        con.executemany(
+            "INSERT INTO tool_calls (ts, session_id, harness, tool, tool_input, status)"
+            " VALUES ('2026-09-12T00:00:00.000Z', ?, 'claude_code', 'Bash', ?, 'success')",
+            [("sess-a", '{"command": "npm test", "description": "Run the tests"}'),
+             ("sess-b", '{"command": "npm test 2>&1 | tail -30", "description": "Run test suite"}'),
+             ("sess-c", '{"command": "npm test | head -n 5", "description": "Check tests"}')],
+        )
+        con.commit()
+        con.close()
+        repeats = subprocess.run(
+            [sys.executable, str(REPORT), "repeats"], capture_output=True, text=True,
+            env={**os.environ, "AOR_HOME": str(self.home)},
+        ).stdout
+        shell = [line for line in repeats.splitlines() if line.startswith("shell")]
+        self.assertEqual(len(shell), 1, repeats)
+        self.assertEqual(shell[0].split()[1:4], ["3", "0", "3"])
+        self.assertNotIn("description", repeats)
+
     def test_kinds_fold_across_harnesses(self):
         con = sqlite3.connect(str(self.home / "tool-tracking.db"))
         con.executescript(SCHEMA.read_text())
@@ -162,7 +206,7 @@ class ReportTests(TempHome):
         ).stdout
         shell = [line for line in repeats.splitlines() if line.startswith("shell")]
         self.assertEqual(len(shell), 1)
-        self.assertEqual(shell[0].split()[1:4], ["3", "3", "3"])
+        self.assertEqual(shell[0].split()[1:5], ["3", "0", "3", "3"])
         self.assertNotIn("Bash", repeats)
         self.assertNotIn("Shell", repeats)
         tools = subprocess.run(

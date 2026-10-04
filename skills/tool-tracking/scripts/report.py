@@ -16,6 +16,7 @@ work counts once across harnesses; the raw name stays in the `tool` column.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -32,10 +33,25 @@ UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 HOME_PATH = re.compile(r"/(?:home|Users)/[^/\s\"']+")
 NUMBER = re.compile(r"\b\d+(?:\.\d+)?\b")
 WHITESPACE = re.compile(r"\s+")
+# How much output the agent chose to look at is not part of the work.
+OUTPUT_TRIM = re.compile(r"\s*2>&1|\s*\|\s*(?:head|tail)(?:\s+-n)?(?:\s+-?\d+)?(?=\s*(?:[;&|\"]|$))")
+
+
+# Model-written prose that rides along with a call (Claude Code's Bash
+# `description`): it differs every time the same command runs.
+PROSE_FIELDS = ("description",)
 
 
 def normalize(text: str) -> str:
     """Collapse the parts of a call that vary run to run, so repeats line up."""
+    try:
+        call = json.loads(text)
+    except ValueError:
+        call = None
+    if isinstance(call, dict) and any(field in call for field in PROSE_FIELDS):
+        text = json.dumps({k: v for k, v in call.items() if k not in PROSE_FIELDS},
+                          ensure_ascii=False, sort_keys=True)
+    text = OUTPUT_TRIM.sub("", text)
     text = UUID.sub("<uuid>", text)
     text = HOME_PATH.sub("/<home>", text)
     text = NUMBER.sub("<n>", text)
@@ -116,18 +132,22 @@ def section_tools(con, limit: int) -> None:
 
 
 def section_failures(con, limit: int) -> None:
-    print("\n== failure rate per tool ==")
+    print("\n== failure rate per tool and harness ==")
+    # fail% is over calls whose status is known: a harness that never reports
+    # failures (Codex) shows as unknown, not as 0% failing.
     rows = con.execute(
-        "SELECT kind(tool) AS tool, COUNT(*) AS calls, SUM(status='error') AS errors,"
-        "       ROUND(100.0 * SUM(status='error') / COUNT(*), 1) AS pct"
-        " FROM tool_calls GROUP BY kind(tool) HAVING errors > 0"
+        "SELECT kind(tool) AS tool, harness, COUNT(*) AS calls,"
+        "       SUM(status='error') AS errors, SUM(status='unknown') AS unknown,"
+        "       ROUND(100.0 * SUM(status='error') / NULLIF(SUM(status!='unknown'), 0), 1) AS pct"
+        " FROM tool_calls GROUP BY kind(tool), harness HAVING errors > 0 OR unknown > 0"
         " ORDER BY pct DESC, errors DESC LIMIT ?",
         (limit,),
     ).fetchall()
     print(
         table(
-            ("tool", "calls", "errors", "fail%"),
-            [(r["tool"], r["calls"], r["errors"], r["pct"]) for r in rows],
+            ("tool", "harness", "calls", "errors", "unknown", "fail%"),
+            [(r["tool"], r["harness"], r["calls"], r["errors"], r["unknown"],
+              "-" if r["pct"] is None else r["pct"]) for r in rows],
             empty="(no failures recorded)",
         )
     )
@@ -136,31 +156,33 @@ def section_failures(con, limit: int) -> None:
 def section_repeats(con, minimum: int, limit: int) -> None:
     print(f"\n== calls repeated across sessions (>= {minimum} total, 2+ sessions) ==")
     buckets = defaultdict(
-        lambda: {"count": 0, "sessions": set(), "harnesses": set(), "sample": ""}
+        lambda: {"count": 0, "errors": 0, "sessions": set(), "harnesses": set(), "sample": ""}
     )
     for row in con.execute(
-        "SELECT tool, harness, tool_input, session_id FROM tool_calls WHERE tool_input != ''"
+        "SELECT tool, harness, tool_input, session_id, status FROM tool_calls"
+        " WHERE tool_input != ''"
     ):
         key = (kind(row["tool"]), normalize(row["tool_input"]))
         bucket = buckets[key]
         bucket["count"] += 1
+        bucket["errors"] += row["status"] == "error"
         bucket["sessions"].add(row["session_id"])
         bucket["harnesses"].add(row["harness"])
-        bucket["sample"] = bucket["sample"] or row["tool_input"][:SAMPLE_CHARS]
+        bucket["sample"] = bucket["sample"] or key[1]
     repeats = [
-        (tool, data["count"], len(data["sessions"]), len(data["harnesses"]), data["sample"])
+        (tool, data["count"], data["errors"], len(data["sessions"]),
+         len(data["harnesses"]), data["sample"])
         for (tool, _), data in buckets.items()
         if data["count"] >= minimum and len(data["sessions"]) >= 2
     ]
-    repeats.sort(key=lambda item: (-item[2], -item[1], item[0]))
+    repeats.sort(key=lambda item: (-item[3], -item[1], item[0]))
     print(
         table(
-            ("tool", "calls", "sessions", "harnesses", "sample input"),
+            ("tool", "calls", "errors", "sessions", "harnesses", "sample input"),
             repeats[:limit],
+            empty="(no cross-session repeats yet)",
         )
     )
-    if not repeats:
-        print("(no cross-session repeats yet)")
 
 
 def section_sessions(con, limit: int) -> None:
@@ -192,7 +214,7 @@ def section_sessions(con, limit: int) -> None:
                     r["errors"],
                     r["harnesses"],
                     (r["started"] or "")[:19],
-                    r["session_id"][:20],
+                    r["session_id"],
                 )
                 for r in rows
             ],
