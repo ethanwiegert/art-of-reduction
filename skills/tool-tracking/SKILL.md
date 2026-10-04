@@ -54,7 +54,7 @@ Reports fold harness tool names into kinds (`shell`, `read`, `edit`, `search`, `
 
 ## What is stored — say this to the user
 
-Table `tool_calls`, one row per call: `ts` (UTC), `session_id`, `harness`, `tool`, `tool_input`, `tool_output`, `status`, `duration_ms`. Full definition in `schema.sql`.
+Table `tool_calls`, one row per call: `ts` (UTC, when the hook fired - the call's end, not its start), `session_id`, `harness`, `tool`, `tool_input`, `tool_output`, `status`, `duration_ms`. Full definition in `schema.sql`.
 
 Arguments and results go to disk in plaintext, redacted for obvious secrets (private keys, provider tokens, `key=value` and `"key": "value"` credentials, `--password`-style flags, URL passwords, Bearer/Basic auth) and truncated to 2000 characters each — `AOR_TRUNCATE` to change that. Redaction is a filter, not a guarantee: file contents, command output, and prompts still land in an unencrypted database, which the installer keeps in a `700` directory. Retention is the user's call — `DELETE FROM tool_calls WHERE ts < ...`, or delete the file.
 

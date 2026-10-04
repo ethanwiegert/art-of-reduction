@@ -139,8 +139,8 @@ def section_failures(con, limit: int) -> None:
         "SELECT kind(tool) AS tool, harness, COUNT(*) AS calls,"
         "       SUM(status='error') AS errors, SUM(status='unknown') AS unknown,"
         "       ROUND(100.0 * SUM(status='error') / NULLIF(SUM(status!='unknown'), 0), 1) AS pct"
-        " FROM tool_calls GROUP BY kind(tool), harness HAVING errors > 0 OR unknown > 0"
-        " ORDER BY pct DESC, errors DESC LIMIT ?",
+        " FROM tool_calls GROUP BY kind(tool), harness"
+        " ORDER BY pct DESC, errors DESC, calls DESC LIMIT ?",
         (limit,),
     ).fetchall()
     print(
@@ -171,11 +171,11 @@ def section_repeats(con, minimum: int, limit: int) -> None:
         bucket["sample"] = bucket["sample"] or key[1]
     repeats = [
         (tool, data["count"], data["errors"], len(data["sessions"]),
-         len(data["harnesses"]), data["sample"])
+         ",".join(sorted(data["harnesses"])), data["sample"])
         for (tool, _), data in buckets.items()
         if data["count"] >= minimum and len(data["sessions"]) >= 2
     ]
-    repeats.sort(key=lambda item: (-item[3], -item[1], item[0]))
+    repeats.sort(key=lambda item: (-item[3], -item[4].count(",") - 1, -item[1], item[0]))
     print(
         table(
             ("tool", "calls", "errors", "sessions", "harnesses", "sample input"),

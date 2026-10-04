@@ -206,7 +206,7 @@ class ReportTests(TempHome):
         ).stdout
         shell = [line for line in repeats.splitlines() if line.startswith("shell")]
         self.assertEqual(len(shell), 1)
-        self.assertEqual(shell[0].split()[1:5], ["3", "0", "3", "3"])
+        self.assertEqual(shell[0].split()[1:5], ["3", "0", "3", "claude_code,cursor,hermes"])
         self.assertNotIn("Bash", repeats)
         self.assertNotIn("Shell", repeats)
         tools = subprocess.run(

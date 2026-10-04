@@ -25,6 +25,7 @@ Needs the `tool-tracking` skill installed alongside (it shares its tool-kind fol
 | What did that session do? | `trail <session_id>` |
 | All shell calls from Codex | `search --tool shell --harness codex` |
 | Which sessions touched a file? | `search --input ".env"` (inputs only; `--grep` also matches every `ls` that printed it) |
+| Who changed it, and how? | `search --input core.py --tool edit`, then `--tool shell` too: agents also edit with `sed -i` and patches, which name the file, not the function |
 | What repeats across sessions? | `tool-tracking`'s `report.py repeats` (it normalizes inputs first) |
 
 Filters combine with AND: `--tool` (a kind - `shell`, `read`, `edit`, `search`, `web` - or a raw tool name), `--session`, `--harness`, `--status success|error|unknown`, `--since`/`--until` (ISO-8601 UTC prefixes), `--grep` (case-insensitive, input or output), `--input` (same, input only), `--limit` (default 50, 0 = all).
