@@ -23,6 +23,8 @@ python3 <tool-tracking>/scripts/report.py sessions
 
 `repeats` is the list to work from: the same tool called with the same normalized input across two or more sessions. Tool count is not a signal — read/grep/shell always dominate any count. Cross-session repetition is the signal.
 
+Before building, pull a few real examples of the candidate with the `tool-log-search` skill (`query.py search --grep "<command>" --limit 5`) so the script handles the inputs that actually occur.
+
 Without the database, look for: the same sequence of steps run for a new input; the same file edited the same way; the same manual check after every change.
 
 Do not automate parsing JSON, calling an API, or looping logic. Those are code-level concerns; they are not workflow automation, and deduplicating them is `art-of-reduction`'s job.

@@ -36,22 +36,29 @@ TOKEN = os.environ.get("AOR_INGEST_TOKEN", "")
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 10  # a stalled client releases its thread
+
     def do_POST(self):
         parts = self.path.split("?")[0].strip("/").split("/")
         if len(parts) != 2 or parts[0] != "hook" or not parts[1]:
             return self.send_error(404, "POST /hook/<harness>")
         if TOKEN and not hmac.compare_digest(
-            self.headers.get("Authorization", ""), f"Bearer {TOKEN}"
+            self.headers.get("Authorization", "").encode(), f"Bearer {TOKEN}".encode()
         ):
             return self.send_error(401)
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             return self.send_error(400, "bad Content-Length")
+        if length <= 0:
+            return self.send_error(411, "Content-Length required")
         if length > MAX_BODY:
             return self.send_error(413)
+        # Browsers cannot send this without a CORS preflight, which is never answered.
+        if self.headers.get_content_type() != "application/json":
+            return self.send_error(415, "Content-Type must be application/json")
         try:
-            payload = json.loads(self.rfile.read(length) or b"{}")
+            payload = json.loads(self.rfile.read(length))
         except ValueError:
             return self.send_error(400, "body must be JSON")
         if not isinstance(payload, dict):

@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import re
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -77,6 +78,29 @@ class RecordTests(TempHome):
         out = run_record("not json", "hermes", self.home)
         self.assertEqual((out.returncode, out.stdout.strip()), (0, "{}"))
         self.assertEqual(list(self.home.iterdir()), [])
+
+    def test_redaction_shapes(self):
+        secrets = {
+            "json": {"password": "hunter2hunter2", "nested": {"api_key": "k3y-value"}},
+            "env": "export OPENAI_API_KEY=abcdef123456 GITHUB_TOKEN=abc123xyz",
+            "flag": "mysql --password hunter3 --token tok999",
+            "url": "git clone https://user:p4ssw0rd@example.com/repo",
+            "basic": "curl -H 'Authorization: Basic dXNlcjpwYXNzd29yZA=='",
+            "header": "X-Api-Key: abcd1234",
+        }
+        run_record({"tool_name": "Bash", "tool_input": secrets}, "claude_code", self.home)
+        blob = read_rows(self.home)[0]["tool_input"]
+        for leaked in ("hunter2hunter2", "k3y-value", "abcdef123456", "abc123xyz", "hunter3",
+                       "tok999", "p4ssw0rd", "dXNlcjpwYXNzd29yZA", "abcd1234"):
+            self.assertNotIn(leaked, blob)
+        for kept in ("mysql", "git clone https://user:", "example.com/repo", "X-Api-Key"):
+            self.assertIn(kept, blob)
+
+    def test_failure_message_kept_as_output(self):
+        run_record({"hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
+                    "error": "command not found: gh"}, "claude_code", self.home)
+        row = read_rows(self.home)[0]
+        self.assertEqual((row["status"], row["tool_output"]), ("error", "command not found: gh"))
 
     def test_redaction_and_truncation(self):
         text = "Authorization: Bearer abcdefghijklmnop API_KEY=supersecretvalue tail"
@@ -160,7 +184,7 @@ class InstallTests(TempHome):
                     env={**os.environ, "AOR_HOME": str(home)},
                 )
                 self.assertEqual(out.returncode, 0, out.stderr)
-                self.assertIn(f"{RECORD} --harness {harness}", out.stdout)
+                self.assertRegex(out.stdout, re.escape(str(RECORD)) + f"'? --harness {harness}")
                 self.assertTrue((home / "tool-tracking.db").exists())
                 self.assertEqual([p.name for p in home.iterdir()], ["tool-tracking.db"])
 
@@ -187,8 +211,9 @@ class ServeTests(TempHome):
         self.proc.stdout.close()
         super().tearDown()
 
-    def post(self, path, body, token="t0k"):
-        req = urllib.request.Request(self.url + path, data=body, method="POST")
+    def post(self, path, body, token="t0k", content_type="application/json"):
+        req = urllib.request.Request(self.url + path, data=body, method="POST",
+                                     headers={"Content-Type": content_type})
         if token:
             req.add_header("Authorization", f"Bearer {token}")
         try:
@@ -223,15 +248,78 @@ class ServeTests(TempHome):
         self.assertEqual([r["harness"] for r in rows], ["codex", "cursor", "hermes"])
         self.assertFalse(local.exists())
 
+    def test_forward_falls_back_to_local_store(self):
+        env = {**os.environ, "AOR_HOME": str(self.home / "client"),
+               "AOR_INGEST_URL": "http://127.0.0.1:9"}
+        out = subprocess.run([sys.executable, str(RECORD), "--harness", "codex"],
+                             input='{"tool_name": "shell"}', capture_output=True, text=True, env=env)
+        self.assertEqual((out.returncode, out.stdout.strip()), (0, "{}"))
+        self.assertEqual(read_rows(self.home / "client")[0]["harness"], "codex")
+
     def test_refusals_write_nothing(self):
         self.assertEqual(self.post("/hook/claude_code", b"{}", token=None), 401)
         self.assertEqual(self.post("/hook/claude_code", b"{}", token="wrong"), 401)
         self.assertEqual(self.post("/elsewhere", b"{}"), 404)
         self.assertEqual(self.post("/hook/claude_code", b"not json"), 400)
         self.assertEqual(self.post("/hook/claude_code", b"[1]"), 400)
+        self.assertEqual(self.post("/hook/claude_code", b""), 411)
+        self.assertEqual(self.post("/hook/claude_code", b"{}", content_type="text/plain"), 415)
+        port = int(self.url.rsplit(":", 1)[1])
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+            conn.sendall(b"POST /hook/x HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer t0k\r\n"
+                         b"Content-Type: application/json\r\nContent-Length: -1\r\n\r\n{}")
+            self.assertIn(b" 411 ", conn.recv(64))
         self.assertFalse((self.home / "tool-tracking.db").exists())
 
     def test_banner_prints_hook_fragment(self):
         self.assertIn('"type": "http"', self.banner)
         self.assertIn("/hook/claude_code", self.banner)
         self.assertIn("Bearer $AOR_INGEST_TOKEN", self.banner)
+
+
+QUERY = ROOT / "skills" / "tool-log-search" / "scripts" / "query.py"
+
+
+class QueryTests(TempHome):
+    def setUp(self):
+        super().setUp()
+        for harness, payload in (
+            ("claude_code", {"session_id": "a", "tool_name": "Bash",
+                             "tool_input": {"command": "gh pr checks 3"}, "tool_response": "all green"}),
+            ("cursor", {"conversation_id": "b", "tool_name": "Shell",
+                        "tool_input": {"command": "npm test"}, "error_message": "boom"}),
+            ("claude_code", {"session_id": "a", "tool_name": "Read", "tool_input": {"file_path": "x.py"}}),
+        ):
+            run_record(payload, harness, self.home)
+
+    def query(self, *args):
+        out = subprocess.run([sys.executable, str(QUERY), *args], capture_output=True, text=True,
+                             env={**os.environ, "AOR_HOME": str(self.home)})
+        return out.returncode, [json.loads(line) for line in out.stdout.splitlines()], out.stderr
+
+    def test_filters_and_trail(self):
+        _, rows, _ = self.query("search", "--tool", "shell")
+        self.assertEqual([r["harness"] for r in rows], ["cursor", "claude_code"])
+        _, rows, _ = self.query("search", "--status", "error")
+        self.assertEqual((len(rows), rows[0]["tool_output"]), (1, "boom"))
+        _, rows, _ = self.query("search", "--grep", "GREEN", "--harness", "claude_code")
+        self.assertEqual([r["tool"] for r in rows], ["Bash"])
+        _, rows, _ = self.query("trail", "a")
+        self.assertEqual([r["tool"] for r in rows], ["Bash", "Read"])
+        _, rows, _ = self.query("search", "--chars", "5", "--limit", "1")
+        self.assertEqual(len(rows), 1)
+        self.assertRegex(rows[0]["tool_input"], r"^.{5}\.\.\.\[\+\d+\]$")
+
+    def test_sql_is_read_only(self):
+        code, rows, _ = self.query("sql", "SELECT kind(tool) AS k, COUNT(*) AS n FROM tool_calls GROUP BY k")
+        self.assertEqual((code, rows), (0, [{"k": "read", "n": 1}, {"k": "shell", "n": 2}]))
+        code, _, err = self.query("sql", "DELETE FROM tool_calls")
+        self.assertNotEqual(code, 0)
+        self.assertIn("readonly", err)
+        self.assertEqual(len(read_rows(self.home)), 3)
+
+    def test_no_rows_and_bad_usage(self):
+        code, rows, err = self.query("search", "--session", "nope")
+        self.assertEqual((code, rows, err.strip()), (0, [], "(no rows)"))
+        self.assertNotEqual(self.query("search", "--bogus", "1")[0], 0)
+        self.assertNotEqual(self.query("trail")[0], 0)

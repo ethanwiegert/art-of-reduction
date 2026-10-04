@@ -14,12 +14,13 @@ npx skills add ethanwiegert/art-of-reduction
 
 Reduce dependencies, and dependency on AI for your workflows.
 
-Every skill here pushes the same direction: fewer concepts in the code, fewer steps in the workflow, and fewer turns of an agent spent on work that should be a script. The repo is three skills and a set of runnable scripts, and it tries to hold to its own thesis — anything repeated is a file, not a paragraph of instructions the agent re-derives each time.
+Every skill here pushes the same direction: fewer concepts in the code, fewer steps in the workflow, and fewer turns of an agent spent on work that should be a script. The repo is four skills and a set of runnable scripts, and it tries to hold to its own thesis — anything repeated is a file, not a paragraph of instructions the agent re-derives each time.
 
 The pipeline, once:
 
 - `tool-tracking` records every tool call.
 - `report.py repeats` names the work that recurs across sessions.
+- `tool-log-search` lets any agent look up past calls before redoing them.
 - `lazy-automate` compiles that work into a script, hook, or config.
 - `art-of-reduction` keeps the resulting code — and every change set — small.
 
@@ -28,6 +29,13 @@ The core skill: review the current change set and remove concepts rather than ch
 
 ### lazy-automate
 The rule of two: the second time the same work appears, it becomes a script, a hook, or a config change so no model is needed for it again. It finds its candidates in the tool-call log — the same call repeated across sessions — rather than guessing from memory, and it prefers the smallest artifact that removes the work.
+
+### tool-log-search
+Lets an agent query the tool-call log directly: filtered search, one session's trail in order, or read-only SQL, all as JSON Lines with long fields cut so the model reads only what it asked for. Use it to check whether the work was already done, or why it failed last time, before doing it again.
+
+```
+python3 skills/tool-log-search/scripts/query.py search --status error --limit 10
+```
 
 ### tool-tracking
 Sets up a local SQLite database and a post-tool hook that records every tool call, then answers the questions worth asking: what repeats across sessions, what fails, and which sessions run long. Ships the schema, an installer, and a read-only report script, so setup is "run the installer and paste the snippet" rather than a description the agent re-implements.
@@ -41,7 +49,7 @@ python3 skills/tool-tracking/scripts/report.py
 - **Location:** `~/.art-of-reduction/tool-tracking.db` (one shared database; each harness sets up its own hook in its own config, and reports fold tool names into kinds so the same work is one row regardless of harness).
 - **Schema:** `skills/tool-tracking/schema.sql` — `tool_calls` with `ts` (UTC), `session_id`, `harness`, `tool`, `tool_input`, `tool_output`, `status`, `duration_ms`, indexed by tool, session, time, and status.
 - **Supported harnesses:** Hermes (`post_tool_call`), Claude Code (`PostToolUse` / `PostToolUseFailure`), Codex (`PostToolUse`), Cursor (`postToolUse` / `postToolUseFailure`). Anything else: point a wrapper at `scripts/record.py`, which maps payloads field-by-field.
-- **Stored in plaintext.** Arguments and results are redacted for obvious secrets and truncated to 2000 characters each, but they are still written to a local unencrypted database. Retention is yours: delete rows or the file.
+- **Stored in plaintext.** Arguments and results are redacted for obvious secrets (private keys, provider tokens, `key=value` and `"key": "value"` credentials, `--password`-style flags, URL passwords, Bearer/Basic auth) and truncated to 2000 characters each, but they are still written to a local unencrypted database. Retention is yours: delete rows or the file.
 - **Shared across a team:** `scripts/serve.py` takes the same hook payloads over HTTP, so every agent writes one store. Any harness's hook forwards there when `AOR_INGEST_URL` is set; Claude Code can also POST directly with a `type: "http"` hook. Redaction runs server-side; a bearer token is required beyond localhost.
 - **It fails open.** Logging breaks; your agent never does.
 

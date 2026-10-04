@@ -73,7 +73,7 @@ def kind(tool: str) -> str:
 def connect() -> sqlite3.Connection:
     if not os.path.exists(DB_PATH):
         sys.exit(f"no database at {DB_PATH} - run scripts/install.sh first")
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     con.create_function("kind", 1, kind, deterministic=True)
     return con

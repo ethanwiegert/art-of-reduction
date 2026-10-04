@@ -35,7 +35,7 @@ Run `python3 scripts/serve.py` on one host. Every harness writes to that one sto
 - **Claude Code** can skip `record.py`: paste the `type: "http"` fragment `serve.py` prints.
 - **Anything that can POST JSON:** `POST /hook/<harness>` with its hook payload as the body.
 
-Beyond localhost it refuses to start without `AOR_INGEST_TOKEN`; clients send it as `Authorization: Bearer`.
+Beyond localhost it refuses to start without `AOR_INGEST_TOKEN`; clients send it as `Authorization: Bearer`. The server speaks plain HTTP, so across a network put it behind a TLS reverse proxy. If the server is unreachable, `record.py` waits at most a second and then writes the row to its local store instead.
 
 No hook support (`install.sh none`)? Point whatever wrapper you have at `scripts/record.py`: it reads a JSON payload on stdin and takes `--harness <name>`.
 
@@ -50,13 +50,13 @@ python3 scripts/report.py sessions        # outlier session sizes
 
 Reports fold harness tool names into kinds (`shell`, `read`, `edit`, `search`, `web`) so repeated work counts once across harnesses; the raw name is still in the `tool` column.
 
-`repeats` is the section to act on; `lazy-automate` consumes it.
+`repeats` is the section to act on; `lazy-automate` consumes it. To look up specific calls (one session, a failure, a command) use the `tool-log-search` skill.
 
 ## What is stored — say this to the user
 
 Table `tool_calls`, one row per call: `ts` (UTC), `session_id`, `harness`, `tool`, `tool_input`, `tool_output`, `status`, `duration_ms`. Full definition in `schema.sql`.
 
-Arguments and results go to disk in plaintext, redacted for obvious secrets (private keys, provider tokens, `KEY=value` assignments) and truncated to 2000 characters each — `AOR_TRUNCATE` to change that. Redaction is a filter, not a guarantee: file contents, command output, and prompts still land in a local unencrypted database. Retention is the user's call — `DELETE FROM tool_calls WHERE ts < ...`, or delete the file.
+Arguments and results go to disk in plaintext, redacted for obvious secrets (private keys, provider tokens, `key=value` and `"key": "value"` credentials, `--password`-style flags, URL passwords, Bearer/Basic auth) and truncated to 2000 characters each — `AOR_TRUNCATE` to change that. Redaction is a filter, not a guarantee: file contents, command output, and prompts still land in an unencrypted database, which the installer keeps in a `700` directory. Retention is the user's call — `DELETE FROM tool_calls WHERE ts < ...`, or delete the file.
 
 ## Pitfalls
 
