@@ -21,7 +21,7 @@ RECORD="$SKILL_DIR/record.py"
 PY=python3
 command -v "$PY" >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 
-mkdir -p "$AOR_HOME"
+mkdir -p "$AOR_HOME" && chmod 700 "$AOR_HOME"   # the log holds command output
 "$PY" - "$DB" "$ROOT/schema.sql" <<'PY'
 import sqlite3, sys
 db, schema = sys.argv[1], sys.argv[2]
@@ -36,7 +36,7 @@ hook_block() {
 hooks:
   post_tool_call:
     - matcher: ".*"
-      command: "$PY $RECORD --harness hermes"
+      command: "$PY '$RECORD' --harness hermes"
       timeout: 10
 EOF
 }
@@ -46,8 +46,8 @@ EOF
 # harness config ourselves.
 emit_hooks() { # $1 = harness, $2 = target, rest = event names
   "$PY" - "$RECORD" "$1" "$2" "${@:3}" <<'PY'
-import json, sys
-record, harness, target, events = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+import json, shlex, sys
+record, harness, target, events = shlex.quote(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4:]
 entry = {"matcher": "", "hooks": [
     {"type": "command", "command": f"python3 {record} --harness {harness}", "timeout": 10}]}
 print(f'Merge this fragment under the top-level "hooks" key of {target}:\n')
@@ -77,8 +77,8 @@ EOF
     ;;
   cursor)
     "$PY" - "$RECORD" <<'PY'
-import json, sys
-command = f"python3 {sys.argv[1]} --harness cursor"
+import json, shlex, sys
+command = f"python3 {shlex.quote(sys.argv[1])} --harness cursor"
 print("Merge this into .cursor/hooks.json (or ~/.cursor/hooks.json for all projects):\n")
 print(json.dumps({"version": 1, "hooks": {
     "postToolUse": [{"command": command}],

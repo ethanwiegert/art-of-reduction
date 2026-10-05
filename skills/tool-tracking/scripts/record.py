@@ -14,6 +14,9 @@ harnesses log and ignore.
 Environment overrides:
     AOR_HOME         store directory (default ~/.art-of-reduction)
     AOR_TRUNCATE     max characters kept per input/output field (default 2000)
+    AOR_INGEST_URL   send the payload to a shared serve.py instead of the local
+                     store; it maps and redacts on arrival
+    AOR_INGEST_TOKEN bearer token for AOR_INGEST_URL
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ import os
 import re
 import sqlite3
 import sys
+import urllib.request
 from datetime import datetime, timezone
 
 AOR_HOME = os.environ.get("AOR_HOME") or os.path.join(
@@ -32,6 +36,8 @@ try:
     TRUNCATE = max(0, int(os.environ.get("AOR_TRUNCATE") or 2000))
 except ValueError:
     TRUNCATE = 2000
+
+INGEST_URL = os.environ.get("AOR_INGEST_URL", "").rstrip("/")
 
 SCHEMA_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), os.pardir, "schema.sql"
@@ -52,18 +58,31 @@ REDACTIONS = (
         "[redacted-token]",
     ),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[redacted-aws-key]"),
+    # KEY=value, "key": "value" (raw or JSON-escaped), OPENAI_API_KEY=..., X-Api-Key: ...
+    # A quoted value is redacted up to its closing quote, spaces and all. Token
+    # counts (max_tokens, token_count) are settings, not secrets.
     (
         re.compile(
-            r"(?i)\b(api[_-]?key|secret|token|password|passwd|credential)s?\b\s*[:=]\s*(\"[^\"]*\"|'[^']*'|\S+)"
+            r"(?i)((?:api[_-]?key|secret|token(?!s\b|s?_?count)|passw(?:or)?d|credential)[\w-]*\\?[\"']?"
+            r"\s*[:=]\s*)(\\?[\"'])(?:(?!\2).)+\2"
         ),
-        r"\1=[redacted]",
+        r"\1\2[redacted]\2",
     ),
-    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}"), "Bearer [redacted]"),
+    (
+        re.compile(
+            r"(?i)((?:api[_-]?key|secret|token(?!s\b|s?_?count)|passw(?:or)?d|credential)[\w-]*\\?[\"']?"
+            r"\s*[:=]\s*\\?[\"']?)(?:[^\s\"'\\,}&]|&(?!\w+=))+"
+        ),
+        r"\1[redacted]",
+    ),
+    (re.compile(r"(?i)(--(?:api-key|password|passwd|secret|token)[= ])\S+"), r"\1[redacted]"),
+    (re.compile(r"(://[^/\s:@]+:)[^/\s@]+@"), r"\1[redacted]@"),
+    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=\-]{8,}"), r"\1 [redacted]"),
 )
 
 
 def normalize_harness(value: str) -> str:
-    return (value or "").strip().lower().replace("-", "_") or "unknown"
+    return (value or "").strip().lower().replace("-", "_")[:40] or "unknown"
 
 
 def pick(payload: dict, *names):
@@ -103,13 +122,17 @@ def map_status(raw, error, event: str, harness: str) -> str:
         if value in {"fail", "failed", "error", "errored", "blocked", "denied"}:
             return "error"
         return "unknown"
-    # Codex fires PostToolUse for failed calls too, with no failure field
-    # (openai/codex#34289); only hooks that fire on success alone may claim it.
+    # Codex skips PostToolUse when its handler reports failure, but a shell call
+    # that exits non-zero can still count as handled (codex-rs/core/src/tools/
+    # registry.rs), and the payload has no exit code: neither proves success.
     return "success" if harness in {"claude_code", "cursor"} else "unknown"
 
 
 def map_row(payload: dict, harness: str) -> dict:
     harness = normalize_harness(harness)
+    # Hermes nests result, status and duration_ms under `extra`; top level wins.
+    if isinstance(payload.get("extra"), dict):
+        payload = {**payload["extra"], **payload}
     event = str(payload.get("hook_event_name") or payload.get("hook_event") or "")
     tool = pick(payload, "tool_name")
     tool_input = pick(payload, "tool_input", "tool_arguments", "args")
@@ -133,7 +156,7 @@ def map_row(payload: dict, harness: str) -> dict:
         "harness": harness,
         "tool": (as_text(tool) or "unknown")[:120],
         "tool_input": clean(tool_input),
-        "tool_output": clean(tool_output),
+        "tool_output": clean(tool_output if tool_output is not None else error),
         "status": map_status(status_raw, error, event, harness),
         "duration_ms": duration_ms,
     }
@@ -149,7 +172,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
 
 
 def write(row: dict) -> None:
-    os.makedirs(AOR_HOME, exist_ok=True)
+    os.makedirs(AOR_HOME, mode=0o700, exist_ok=True)
     con = sqlite3.connect(DB_PATH, timeout=5)
     try:
         con.execute("PRAGMA busy_timeout = 5000")
@@ -174,6 +197,19 @@ def write(row: dict) -> None:
         con.close()
 
 
+def forward(payload: dict, harness: str) -> None:
+    request = urllib.request.Request(
+        f"{INGEST_URL}/hook/{normalize_harness(harness)}",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    token = os.environ.get("AOR_INGEST_TOKEN")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    urllib.request.urlopen(request, timeout=1).close()
+
+
 def main(argv: list) -> None:
     harness = ""
     for index, arg in enumerate(argv):
@@ -185,7 +221,14 @@ def main(argv: list) -> None:
     payload = json.loads(raw) if raw.strip() else {}
     if not isinstance(payload, dict):
         payload = {"tool_output": payload}
-    write(map_row(payload, harness))
+    if INGEST_URL:
+        try:
+            forward(payload, harness)
+        except OSError as exc:  # host down: keep the row locally, never lose it
+            print(f"record.py: forward failed, wrote locally: {exc}", file=sys.stderr)
+            write(map_row(payload, harness))
+    else:
+        write(map_row(payload, harness))
 
 
 if __name__ == "__main__":
