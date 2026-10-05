@@ -59,10 +59,19 @@ REDACTIONS = (
     ),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[redacted-aws-key]"),
     # KEY=value, "key": "value" (raw or JSON-escaped), OPENAI_API_KEY=..., X-Api-Key: ...
+    # A quoted value is redacted up to its closing quote, spaces and all. Token
+    # counts (max_tokens, token_count) are settings, not secrets.
     (
         re.compile(
-            r"(?i)((?:api[_-]?key|secret|token|passw(?:or)?d|credential)[\w-]*\\?[\"']?"
-            r"\s*[:=]\s*\\?[\"']?)[^\s\"'\\,}&]+"
+            r"(?i)((?:api[_-]?key|secret|token(?!s\b|s?_?count)|passw(?:or)?d|credential)[\w-]*\\?[\"']?"
+            r"\s*[:=]\s*)(\\?[\"'])(?:(?!\2).)+\2"
+        ),
+        r"\1\2[redacted]\2",
+    ),
+    (
+        re.compile(
+            r"(?i)((?:api[_-]?key|secret|token(?!s\b|s?_?count)|passw(?:or)?d|credential)[\w-]*\\?[\"']?"
+            r"\s*[:=]\s*\\?[\"']?)(?:[^\s\"'\\,}&]|&(?!\w+=))+"
         ),
         r"\1[redacted]",
     ),
@@ -113,13 +122,17 @@ def map_status(raw, error, event: str, harness: str) -> str:
         if value in {"fail", "failed", "error", "errored", "blocked", "denied"}:
             return "error"
         return "unknown"
-    # Codex fires PostToolUse for failed calls too, with no failure field
-    # (openai/codex#34289); only hooks that fire on success alone may claim it.
+    # Codex skips PostToolUse when its handler reports failure, but a shell call
+    # that exits non-zero can still count as handled (codex-rs/core/src/tools/
+    # registry.rs), and the payload has no exit code: neither proves success.
     return "success" if harness in {"claude_code", "cursor"} else "unknown"
 
 
 def map_row(payload: dict, harness: str) -> dict:
     harness = normalize_harness(harness)
+    # Hermes nests result, status and duration_ms under `extra`; top level wins.
+    if isinstance(payload.get("extra"), dict):
+        payload = {**payload["extra"], **payload}
     event = str(payload.get("hook_event_name") or payload.get("hook_event") or "")
     tool = pick(payload, "tool_name")
     tool_input = pick(payload, "tool_input", "tool_arguments", "args")

@@ -11,6 +11,7 @@ Filters for `search`:
     --session ID    --harness NAME    --status success|error|unknown
     --since TS      --until TS        ISO-8601 UTC prefixes, e.g. 2026-10-01
     --grep TEXT     case-insensitive substring of tool_input or tool_output
+    --input TEXT    same, tool_input only (what the agent ran or touched)
     --limit N       default 50 (0 = all)
 
     --chars N       truncate tool_input/tool_output per row (default 300, 0 = all)
@@ -39,6 +40,7 @@ FILTERS = {
     "--since": "ts >= :since",
     "--until": "ts < :until",
     "--grep": "instr(lower(tool_input || ' ' || tool_output), lower(:grep)) > 0",
+    "--input": "instr(lower(tool_input), lower(:input)) > 0",
 }
 
 
@@ -131,4 +133,5 @@ if __name__ == "__main__":
     try:
         main(sys.argv[1:])
     except sqlite3.Error as exc:
-        sys.exit(f"sqlite error: {exc}")
+        hint = " (kind is a function: use kind(tool))" if "no such column: kind" in str(exc) else ""
+        sys.exit(f"sqlite error: {exc}{hint}")
