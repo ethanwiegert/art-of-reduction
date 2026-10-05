@@ -12,6 +12,7 @@ Filters for `search`:
     --since TS      --until TS        ISO-8601 UTC prefixes, e.g. 2026-10-01
     --grep TEXT     case-insensitive substring of tool_input or tool_output
     --input TEXT    same, tool_input only (what the agent ran or touched)
+    --cwd TEXT      substring of the working directory: one project's calls
     --limit N       default 50 (0 = all)
 
     --chars N       truncate tool_input/tool_output per row (default 300, 0 = all)
@@ -29,9 +30,10 @@ import sys
 sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "tool-tracking", "scripts")
 )
-from report import DB_PATH, KINDS, kind  # noqa: E402
+from report import DB_PATH, KINDS, connect  # noqa: E402
 
-COLUMNS = "id, ts, session_id, harness, tool, kind(tool) AS kind, status, duration_ms, tool_input, tool_output"
+COLUMNS = ("id, ts, session_id, harness, cwd, tool, kind(tool) AS kind, status, duration_ms,"
+           " input_chars, output_chars, tool_input, tool_output")
 FILTERS = {
     "--tool": "(kind(tool) = lower(:tool) OR lower(tool) = lower(:tool))",
     "--session": "session_id = :session",
@@ -41,16 +43,8 @@ FILTERS = {
     "--until": "ts < :until",
     "--grep": "instr(lower(tool_input || ' ' || tool_output), lower(:grep)) > 0",
     "--input": "instr(lower(tool_input), lower(:input)) > 0",
+    "--cwd": "instr(cwd, :cwd) > 0",
 }
-
-
-def connect() -> sqlite3.Connection:
-    if not os.path.exists(DB_PATH):
-        sys.exit(f"no database at {DB_PATH} - set AOR_HOME or run tool-tracking's install.sh")
-    con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
-    con.create_function("kind", 1, kind, deterministic=True)
-    return con
 
 
 def emit(rows, chars: int) -> int:
@@ -108,8 +102,10 @@ def main(argv: list) -> None:
         print(json.dumps({
             "db": DB_PATH,
             "table": "tool_calls",
-            "columns": ["id", "ts", "session_id", "harness", "tool", "tool_input",
-                        "tool_output", "status", "duration_ms"],
+            "columns": ["id", "ts", "session_id", "harness", "cwd", "tool", "tool_input",
+                        "tool_output", "status", "duration_ms", "input_chars", "output_chars"],
+            "notes": "input_chars/output_chars: size before truncation (null on old rows);"
+                     " cwd: the agent's working directory ('' when the harness sends none)",
             "kinds": sorted(set(KINDS.values())),
             "sql_function": "kind(tool) folds harness tool names into kinds",
         }))
