@@ -13,6 +13,7 @@ skills/
   lazy-automate/    instructions only: turn repeats into scripts
   art-of-reduction/ instructions only: shrink change sets
 tests/test_tool_tracking.py   all tests, stdlib unittest
+evals/run.py                  field test: live Claude Code sessions + replays, scored; results in evals/results/
 ```
 
 Data flow: agent hook -> `record.py` (maps each harness's payload, measures, redacts, truncates; owns the schema and upgrades old stores via `PRAGMA user_version`) -> SQLite `~/.art-of-reduction/tool-tracking.db` -> `report.py` / `query.py`. `serve.py` runs the same mapping and redaction behind `POST /hook/<harness>` for a shared team log; `record.py` forwards there when `AOR_INGEST_URL` is set and falls back to the local store after 1s.
@@ -25,6 +26,7 @@ bash skills/tool-tracking/scripts/install.sh <harness>      # claude_code | code
 python3 skills/tool-tracking/scripts/report.py [tools|repeats|workflows|failures|sessions] [--since TS]
 python3 skills/tool-log-search/scripts/query.py schema|search|trail <id>|sql "<SELECT>"
 python3 skills/tool-tracking/scripts/serve.py [--host H --port P]   # default 127.0.0.1:8787
+python3 evals/run.py [--model sonnet] [--runs 2]           # field test; needs `claude`, costs tokens
 ```
 
 Environment: `AOR_HOME` (store dir), `AOR_TRUNCATE` (default 2000), `AOR_INGEST_URL`, `AOR_INGEST_TOKEN`, `AOR_HARNESS`.
@@ -50,4 +52,4 @@ Environment: `AOR_HOME` (store dir), `AOR_TRUNCATE` (default 2000), `AOR_INGEST_
 
 ## Before you open a PR
 
-Run `python3 -m unittest discover tests` and keep it green. Update the relevant `SKILL.md` and the README when behavior or commands change.
+Work comes from `ROADMAP.md` (the moat, the weekly loop, the ranked backlog) and is reviewed against `REVIEW.md`. Run `python3 -m unittest discover tests` and keep it green. Update the relevant `SKILL.md` and the README when behavior or commands change.
