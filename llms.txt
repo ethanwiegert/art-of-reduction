@@ -1,8 +1,8 @@
 # art-of-reduction
 
-> Agent skills that log every tool call AI coding agents make (Claude Code, OpenAI Codex, Cursor, Hermes, or any harness that can send JSON) into one SQLite database, find the calls repeated across sessions, and compile that repeated work into deterministic scripts. Python standard library only. MIT licensed. Install: `npx skills add ethanwiegert/art-of-reduction`.
+> Agent skills that log every tool call AI coding agents make (Claude Code, OpenAI Codex, Cursor, Gemini CLI, GitHub Copilot CLI, Hermes, or any harness that can send JSON) into one SQLite database, find the calls and call sequences repeated across sessions, ranked by the model turns a script would save, and compile that repeated work into deterministic scripts. Python standard library only. MIT licensed. Install: `npx skills add ethanwiegert/art-of-reduction`.
 
-Pipeline: record (tool-tracking) -> find repeats (report.py repeats) -> recall past calls (tool-log-search) -> codify into a script (lazy-automate) -> keep code small (art-of-reduction).
+Pipeline: record (tool-tracking) -> find repeats (report.py workflows, repeats) -> recall past calls (tool-log-search) -> codify into a script (lazy-automate) -> keep code small (art-of-reduction).
 
 ## Docs
 
@@ -11,7 +11,7 @@ Pipeline: record (tool-tracking) -> find repeats (report.py repeats) -> recall p
 
 ## Skills
 
-- [tool-tracking](https://github.com/ethanwiegert/art-of-reduction/blob/main/skills/tool-tracking/SKILL.md): set up tool-call logging per agent, a shared team log over HTTP, and reports (repeats, failures, sessions)
+- [tool-tracking](https://github.com/ethanwiegert/art-of-reduction/blob/main/skills/tool-tracking/SKILL.md): set up tool-call logging per agent, a shared team log over HTTP, and reports (workflows, repeats, failures, sessions, --since for before/after)
 - [tool-log-search](https://github.com/ethanwiegert/art-of-reduction/blob/main/skills/tool-log-search/SKILL.md): query past tool calls as JSON Lines before redoing or debugging work
 - [lazy-automate](https://github.com/ethanwiegert/art-of-reduction/blob/main/skills/lazy-automate/SKILL.md): the rule of two; turn repeated work into a script, hook or config
 - [art-of-reduction](https://github.com/ethanwiegert/art-of-reduction/blob/main/skills/art-of-reduction/SKILL.md): review a change set and remove concepts, not lines

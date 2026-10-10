@@ -4,7 +4,7 @@ Guide for coding agents (Claude Code, Codex, Cursor, Hermes, or any other) worki
 
 ## What this repo is
 
-Four agent skills that record every tool call an agent makes, find the calls repeated across sessions, and turn them into scripts. Each skill is a folder with a `SKILL.md` (YAML frontmatter `name` + `description`, then instructions) and optional `scripts/`. Installed with `npx skills add ethanwiegert/art-of-reduction`.
+Four agent skills that record every tool call an agent makes, find the calls and call sequences repeated across sessions, and turn them into scripts. Each tool call is a model turn that re-reads the whole context, so calls removed are the saving the reports rank by. Each skill is a folder with a `SKILL.md` (YAML frontmatter `name` + `description`, then instructions) and optional `scripts/`. Installed with `npx skills add ethanwiegert/art-of-reduction`.
 
 ```
 skills/
@@ -15,14 +15,14 @@ skills/
 tests/test_tool_tracking.py   all tests, stdlib unittest
 ```
 
-Data flow: agent hook -> `record.py` (maps each harness's payload, redacts, truncates) -> SQLite `~/.art-of-reduction/tool-tracking.db` -> `report.py` / `query.py`. `serve.py` runs the same mapping and redaction behind `POST /hook/<harness>` for a shared team log; `record.py` forwards there when `AOR_INGEST_URL` is set and falls back to the local store after 1s.
+Data flow: agent hook -> `record.py` (maps each harness's payload, measures, redacts, truncates; owns the schema and upgrades old stores via `PRAGMA user_version`) -> SQLite `~/.art-of-reduction/tool-tracking.db` -> `report.py` / `query.py`. `serve.py` runs the same mapping and redaction behind `POST /hook/<harness>` for a shared team log; `record.py` forwards there when `AOR_INGEST_URL` is set and falls back to the local store after 1s.
 
 ## Commands
 
 ```
 python3 -m unittest discover tests                          # run all tests (from repo root)
-bash skills/tool-tracking/scripts/install.sh <harness>      # claude_code | codex | cursor | hermes | none
-python3 skills/tool-tracking/scripts/report.py [tools|repeats|failures|sessions]
+bash skills/tool-tracking/scripts/install.sh <harness>      # claude_code | codex | cursor | gemini | copilot | hermes | none
+python3 skills/tool-tracking/scripts/report.py [tools|repeats|workflows|failures|sessions] [--since TS]
 python3 skills/tool-log-search/scripts/query.py schema|search|trail <id>|sql "<SELECT>"
 python3 skills/tool-tracking/scripts/serve.py [--host H --port P]   # default 127.0.0.1:8787
 ```
@@ -41,10 +41,12 @@ Environment: `AOR_HOME` (store dir), `AOR_TRUNCATE` (default 2000), `AOR_INGEST_
 
 ## Known traps
 
-- Codex reports no status or duration (`unknown` / NULL) and never fires the hook for failed calls.
+- Codex reports no status or duration (`unknown` / NULL) and never fires the hook for failed calls. It has no read tool: it reads with `sed -n`/`cat`, which `report.py` groups by file.
+- Gemini CLI hook timeouts are milliseconds; Claude Code and Codex use seconds, Copilot CLI `timeoutSec`.
+- `cwd` is what makes paths line up across machines: `report.py` strips it from inputs. A harness that sends none (Hermes) keeps absolute paths.
 - `status` is the tool's exit code: `npm test | tail` stores `success` even when tests fail.
 - `ts` is when the hook fired (the call's end).
-- Cursor's payload shape is not verified against a live Cursor.
+- Cursor's and Copilot CLI's payload shapes come from their docs, not a live run. Codex's come from its generated hook schema (`codex-rs/hooks/schema/generated`), Gemini CLI's from `docs/hooks/reference.md`, Claude Code's from live sessions.
 
 ## Before you open a PR
 

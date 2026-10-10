@@ -12,10 +12,12 @@ The log answers one question: what work does this agent repeat? One SQLite file,
 1. Run the installer for your harness from this skill's directory — it prints the exact config to paste:
 
    ```
-   bash scripts/install.sh hermes
    bash scripts/install.sh claude_code
    bash scripts/install.sh codex
    bash scripts/install.sh cursor
+   bash scripts/install.sh gemini
+   bash scripts/install.sh copilot
+   bash scripts/install.sh hermes
    ```
 
    It creates `~/.art-of-reduction/tool-tracking.db` and prints the fragment; you merge it into the harness config yourself — the installer never writes there. Harness config **must** stay in the harness's own config directory — only the database is shared. The installer also prints the absolute report command; keep it.
@@ -31,7 +33,7 @@ The log answers one question: what work does this agent repeat? One SQLite file,
 
 Run `python3 scripts/serve.py` on one host. Every harness writes to that one store, with the same mapping and redaction as `record.py`, applied server-side:
 
-- **Any harness** (Hermes, Codex, Cursor, a custom wrapper): set `AOR_INGEST_URL` (and `AOR_INGEST_TOKEN`) in the environment the agent runs in, then set up its hook exactly as above. `record.py` forwards the payload instead of writing locally.
+- **Any harness** (Codex, Cursor, Gemini CLI, Copilot CLI, Hermes, a custom wrapper): set `AOR_INGEST_URL` (and `AOR_INGEST_TOKEN`) in the environment the agent runs in, then set up its hook exactly as above. `record.py` forwards the payload instead of writing locally.
 - **Claude Code** can skip `record.py`: paste the `type: "http"` fragment `serve.py` prints.
 - **Anything that can POST JSON:** `POST /hook/<harness>` with its hook payload as the body.
 
@@ -42,19 +44,28 @@ No hook support (`install.sh none`)? Point whatever wrapper you have at `scripts
 ## Reading it
 
 ```
-python3 scripts/report.py                 # everything
-python3 scripts/report.py repeats --min 3 # same call, 2+ sessions
-python3 scripts/report.py failures        # which tools error most
-python3 scripts/report.py sessions        # outlier session sizes
+python3 scripts/report.py                   # everything
+python3 scripts/report.py workflows         # same calls in the same order, 2+ sessions
+python3 scripts/report.py repeats --min 3   # same call, 2+ sessions
+python3 scripts/report.py failures          # which tools error most
+python3 scripts/report.py sessions          # calls per session, outliers
+python3 scripts/report.py sessions --since 2026-10-01   # only calls from then on
 ```
 
 Reports fold harness tool names into kinds (`shell`, `read`, `edit`, `search`, `web`) so repeated work counts once across harnesses; the raw name is still in the `tool` column.
 
-`repeats` is the section to act on; `lazy-automate` consumes it. It groups calls that are identical once paths, numbers, ids, model-written `description` fields and output trimming (`2>&1`, `| tail -n 30`) are folded away, so variants of the same work (`cd x && npm test`, extra flags) count separately: check `query.py search --input "<command>"` before deciding something is rare. Its `errors` column flags a repeated call that keeps failing; script the call that works, not that one. To look up specific calls (one session, a failure, a command) use the `tool-log-search` skill.
+What automation saves is calls: each tool call is a model turn, and each turn re-reads the whole context. So `workflows` and `repeats` are the sections to act on; `lazy-automate` consumes them.
+
+- `repeats` groups calls by what they do: shell calls by program and subcommand (`cd x && python3 -m pytest -q | tail` is `python -m pytest`), reads and edits by file, relative to the agent's working directory so the same file lines up across machines. `forms` counts the spellings; a high count means agents re-derive the command each time. `errors` flags a call that keeps failing: script the call that works, not that one.
+- `workflows` finds the same sequence of those calls in two or more sessions. `saves` = (steps − 1) × runs: the most one script call could have replaced. It is an upper bound: read → edit → test is judgment, and only its deterministic steps script.
+- `~tok` is output characters / 4 (before truncation): what calls add to the context. It matters for noisy commands; it is an estimate, not a bill.
+- `--since` compares before and after: run `sessions --since <the day you automated something>` and check mean calls per session went down.
+
+To look up specific calls (one session, a failure, a command) use the `tool-log-search` skill.
 
 ## What is stored — say this to the user
 
-Table `tool_calls`, one row per call: `ts` (UTC, when the hook fired - the call's end, not its start), `session_id`, `harness`, `tool`, `tool_input`, `tool_output`, `status`, `duration_ms`. Full definition in `schema.sql`.
+Table `tool_calls`, one row per call: `ts` (UTC, when the hook fired - the call's end, not its start), `session_id`, `harness`, `cwd` (the agent's working directory), `tool`, `tool_input`, `tool_output`, `status`, `duration_ms`, and `input_chars`/`output_chars` (sizes before truncation). Full definition in `schema.sql`; `record.py` upgrades an older store in place on the next call.
 
 Arguments and results go to disk in plaintext, redacted for obvious secrets (private keys, provider tokens, `key=value` and `"key": "value"` credentials, `--password`-style flags, URL passwords, Bearer/Basic auth) and truncated to 2000 characters each — `AOR_TRUNCATE` to change that. Redaction is a filter, not a guarantee: file contents, command output, and prompts still land in an unencrypted database, which the installer keeps in a `700` directory. Retention is the user's call — `DELETE FROM tool_calls WHERE ts < ...`, or delete the file.
 

@@ -20,6 +20,12 @@ INSTALL = TOOL / "scripts/install.sh"
 SERVE = TOOL / "scripts/serve.py"
 SCHEMA = TOOL / "schema.sql"
 TS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+# The table as schema v1 created it, for upgrade tests.
+V1_SCHEMA = """CREATE TABLE tool_calls (
+    id INTEGER PRIMARY KEY, ts TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '',
+    harness TEXT NOT NULL, tool TEXT NOT NULL, tool_input TEXT NOT NULL DEFAULT '',
+    tool_output TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'unknown',
+    duration_ms INTEGER);"""
 
 
 def run_record(payload, harness, home, truncate=None):
@@ -58,6 +64,10 @@ class RecordTests(TempHome):
             ("cursor", {"tool_name": "write_file", "error_message": "no"}, "error"),
             ("hermes", {"tool_name": "terminal", "status": "success"}, "success"),
             ("hermes", {"tool_name": "terminal", "status": "error"}, "error"),
+            ("gemini", {"tool_name": "run_shell_command", "tool_response": {"llmContent": "ok"}}, "success"),
+            ("gemini", {"tool_name": "read_file", "tool_response": {"error": {"message": "ENOENT"}}}, "error"),
+            ("copilot", {"toolName": "bash", "toolResult": {"resultType": "success"}}, "success"),
+            ("copilot", {"toolName": "bash", "toolResult": {"resultType": "failure"}}, "error"),
         ]
         for harness, payload, expected in cases:
             with self.subTest(harness=harness, status=expected):
@@ -87,11 +97,14 @@ class RecordTests(TempHome):
             "url": "git clone https://user:p4ssw0rd@example.com/repo",
             "basic": "curl -H 'Authorization: Basic dXNlcjpwYXNzd29yZA=='",
             "header": "X-Api-Key: abcd1234",
+            # `head -3 id_rsa` or a truncated output: no END line.
+            "cut_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAA\nQyNTUxOQAAACDx",
         }
         run_record({"tool_name": "Bash", "tool_input": secrets}, "claude_code", self.home)
         blob = read_rows(self.home)[0]["tool_input"]
         for leaked in ("hunter2hunter2", "k3y-value", "abcdef123456", "abc123xyz", "hunter3",
-                       "tok999", "p4ssw0rd", "dXNlcjpwYXNzd29yZA", "abcd1234"):
+                       "tok999", "p4ssw0rd", "dXNlcjpwYXNzd29yZA", "abcd1234", "b3BlbnNzaC1rZXkt",
+                       "QyNTUxOQAAACDx"):
             self.assertNotIn(leaked, blob)
         for kept in ("mysql", "git clone https://user:", "example.com/repo", "X-Api-Key"):
             self.assertIn(kept, blob)
@@ -133,6 +146,62 @@ class RecordTests(TempHome):
         self.assertNotIn("supersecretvalue", blob)
         run_record({"tool_name": "Bash", "tool_input": "x" * 500}, "claude_code", self.home, truncate=10)
         self.assertEqual(read_rows(self.home)[1]["tool_input"], "x" * 10)
+
+    def test_secret_across_the_cut_and_sizes_before_it(self):
+        # Redaction runs before truncation, so a key that starts just before the
+        # cut is redacted whole; sizes are measured before both.
+        key = "-----BEGIN RSA PRIVATE KEY-----\n" + "A" * 3000 + "\n-----END RSA PRIVATE KEY-----"
+        output = "x" * 1990 + key + "y" * 100_000
+        run_record({"tool_name": "Read", "tool_input": {"file_path": "id_rsa"},
+                    "tool_response": output}, "claude_code", self.home, truncate=2000)
+        row = read_rows(self.home)[0]
+        self.assertEqual(row["tool_output"], "x" * 1990 + "[redacted-")
+        self.assertEqual(row["output_chars"], len(output))
+        self.assertEqual(row["input_chars"], len('{"file_path": "id_rsa"}'))
+
+    def test_cwd_and_model_facing_output(self):
+        cases = [
+            # Gemini CLI: llmContent is what the model read; returnDisplay is for the user.
+            ("gemini", {"cwd": "/w/app", "tool_name": "read_file",
+                        "tool_response": {"llmContent": "file body", "returnDisplay": "Read 1 line"}},
+             "/w/app", "file body"),
+            # Copilot CLI's camelCase payload.
+            ("copilot", {"cwd": "/w/app", "sessionId": "c1", "toolName": "bash",
+                         "toolArgs": {"command": "ls"},
+                         "toolResult": {"resultType": "success", "textResultForLlm": "a.txt"}},
+             "/w/app", "a.txt"),
+            # Cursor sends workspace_roots.
+            ("cursor", {"workspace_roots": ["/w/app"], "tool_name": "Shell", "tool_output": "ok"},
+             "/w/app", "ok"),
+        ]
+        for harness, payload, cwd, output in cases:
+            with self.subTest(harness=harness):
+                run_record(payload, harness, self.home)
+                row = read_rows(self.home)[-1]
+                self.assertEqual((row["cwd"], row["tool_output"]), (cwd, output))
+        self.assertEqual(read_rows(self.home)[1]["session_id"], "c1")
+        # Claude Code's Edit returns the whole file as it was; no model reads that.
+        run_record({"tool_name": "Edit", "tool_response": {"filePath": "a.py",
+                    "originalFile": "OLD BODY " * 500, "structuredPatch": [{"lines": ["+x"]}]}},
+                   "claude_code", self.home)
+        row = read_rows(self.home)[-1]
+        self.assertNotIn("OLD BODY", row["tool_output"])
+        self.assertIn("structuredPatch", row["tool_output"])
+        self.assertLess(row["output_chars"], 200)
+
+    def test_upgrades_a_store_from_before_v2(self):
+        con = sqlite3.connect(str(self.home / "tool-tracking.db"))
+        con.executescript(V1_SCHEMA)
+        con.execute("INSERT INTO tool_calls (ts, harness, tool) VALUES ('2026-01-01T00:00:00.000Z', 'codex', 'shell')")
+        con.commit()
+        con.close()
+        run_record({"tool_name": "Bash", "cwd": "/w/app"}, "claude_code", self.home)
+        rows = read_rows(self.home)
+        self.assertEqual([(r["harness"], r["cwd"]) for r in rows], [("codex", ""), ("claude_code", "/w/app")])
+        self.assertIsNone(rows[0]["output_chars"])
+        con = sqlite3.connect(str(self.home / "tool-tracking.db"))
+        self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 2)
+        con.close()
 
 
 class ReportTests(TempHome):
@@ -184,7 +253,7 @@ class ReportTests(TempHome):
         ).stdout
         shell = [line for line in repeats.splitlines() if line.startswith("shell")]
         self.assertEqual(len(shell), 1, repeats)
-        self.assertEqual(shell[0].split()[1:4], ["3", "0", "3"])
+        self.assertEqual(shell[0].split()[1:4], ["3", "3", "0"])  # calls, sessions, errors
         self.assertNotIn("description", repeats)
 
     def test_kinds_fold_across_harnesses(self):
@@ -206,7 +275,8 @@ class ReportTests(TempHome):
         ).stdout
         shell = [line for line in repeats.splitlines() if line.startswith("shell")]
         self.assertEqual(len(shell), 1)
-        self.assertEqual(shell[0].split()[1:5], ["3", "0", "3", "claude_code,cursor,hermes"])
+        self.assertEqual(shell[0].split()[1:4], ["3", "3", "0"])
+        self.assertIn("claude_code,cursor,hermes", shell[0])
         self.assertNotIn("Bash", repeats)
         self.assertNotIn("Shell", repeats)
         tools = subprocess.run(
@@ -217,9 +287,124 @@ class ReportTests(TempHome):
         self.assertEqual(shell[0].split()[1], "3")
 
 
+class SignatureTests(unittest.TestCase):
+    """What repeats and workflows group on: the work, not its spelling."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(TOOL / "scripts"))
+        import report
+        cls.report = report
+
+    def test_command_head(self):
+        cases = {
+            "python3 -m unittest discover tests -v": "python -m unittest",
+            "cd app && python -m unittest tests.test_stock 2>&1 | tail -n 30": "python -m unittest",
+            'git commit -m "fix: a | b"': "git commit",
+            "FOO=1 timeout 30 npm run build -- --watch": "npm run build",
+            "sudo docker compose up -d": "docker compose up",
+            "go test ./...": "go test",
+            "cat README.md": "cat README.md",
+            "sed -n '1,200p' src/core.py": "sed src/core.py",
+            "head -n 40 README.md | grep x": "head README.md",
+            "/usr/bin/python3.11 scripts/gen.py --out x": "python scripts/gen.py",
+            "ls -la tests/ && cat README.md": "ls",
+            "pytest 2>/dev/null": "pytest",
+            "./scripts/test tests.test_stock": "scripts/test tests.test_stock",
+            "cd app\ngit status\ngit diff": "git status",
+            'echo "unbalanced': 'echo "unbalanced',  # unparseable: split on spaces, never raise
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(self.report.command_head(command), expected)
+        self.assertEqual(self.report.command_head(["bash", "-lc", "npm test"]), "npm test")
+
+    def test_signature_by_kind(self):
+        sig = self.report.signature
+        self.assertEqual(sig("read", '{"file_path": "/w/app/src/a.py"}', "/w/app"), "src/a.py")
+        self.assertEqual(sig("edit", '{"command": "*** Begin Patch\\n*** Update File: src/a.py\\n"}'),
+                         "src/a.py")
+        self.assertEqual(sig("shell", '{"command": "npm test", "description": "Run tests"}'), "npm test")
+        self.assertEqual(sig("search", '{"pattern": "TODO", "path": "/w/app"}', "/w/app"),
+                         '{"pattern": "TODO", "path": "."}')
+
+
+def insert(home, rows, schema=None):
+    """rows: (ts, session_id, harness, cwd, tool, tool_input, status)."""
+    con = sqlite3.connect(str(home / "tool-tracking.db"))
+    if schema:
+        con.executescript(schema)
+        con.executemany("INSERT INTO tool_calls (ts, session_id, harness, tool, tool_input, status)"
+                        " VALUES (?, ?, ?, ?, ?, ?)", [r[:3] + r[4:] for r in rows])
+    else:
+        con.executescript(SCHEMA.read_text())
+        con.executemany("INSERT INTO tool_calls (ts, session_id, harness, cwd, tool, tool_input, status)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+    con.commit()
+    con.close()
+
+
+def report(home, *args):
+    out = subprocess.run([sys.executable, str(REPORT), *args], capture_output=True, text=True,
+                         env={**os.environ, "AOR_HOME": str(home)})
+    return out.returncode, out.stdout, out.stderr
+
+
+class CostTests(TempHome):
+    def test_workflows_rank_by_turns_a_script_saves(self):
+        steps = [("Bash", '{"command": "python -m pytest"}', "error"),
+                 ("Bash", '{"command": "pip install pytest"}', "success"),
+                 ("Bash", '{"command": "python -m pytest -q"}', "success")]
+        rows = []
+        for n, session in enumerate(("a", "b", "c")):
+            rows.append((f"2026-10-0{n + 1}T00:00:00.000Z", session, "claude_code", "/w/app", "Read",
+                         f'{{"file_path": "/w/app/only-{session}.py"}}', "success"))
+            rows += [(f"2026-10-0{n + 1}T00:00:0{i + 1}.000Z", session, "claude_code", "/w/app", tool,
+                      command, status) for i, (tool, command, status) in enumerate(steps)]
+        insert(self.home, rows)
+        code, out, err = report(self.home, "workflows")
+        self.assertEqual(code, 0, err)
+        lines = [line for line in out.splitlines() if "->" in line]
+        # One sequence, found in all three sessions: 3 steps -> one script saves 2 turns x 3 runs.
+        self.assertEqual(len(lines), 1, out)
+        self.assertEqual(lines[0].split()[:4], ["6", "3", "3", "3"])
+        self.assertIn("shell python -m pytest -> shell pip install pytest -> shell python -m pytest",
+                      lines[0])
+
+    def test_paths_line_up_across_machines(self):
+        insert(self.home, [
+            ("2026-10-01T00:00:00.000Z", "a", "claude_code", "/home/ann/app", "Read",
+             '{"file_path": "/home/ann/app/src/core.py"}', "success"),
+            ("2026-10-01T00:00:00.000Z", "b", "codex", "/Users/bob/code/app", "read_file",
+             '{"path": "/Users/bob/code/app/src/core.py"}', "success"),
+            ("2026-10-01T00:00:00.000Z", "c", "gemini", "/srv/ci/app", "read_file",
+             '{"absolute_path": "/srv/ci/app/src/core.py"}', "success"),
+        ])
+        _, out, _ = report(self.home, "repeats")
+        read = [line for line in out.splitlines() if line.startswith("read")]
+        self.assertEqual(len(read), 1, out)
+        self.assertEqual(read[0].split()[1:3], ["3", "3"])
+        self.assertIn("src/core.py", read[0])
+
+    def test_since_and_a_store_not_yet_upgraded(self):
+        rows = [("2026-09-01T00:00:00.000Z", "old", "codex", "", "shell", '{"command": "make"}', "unknown"),
+                ("2026-10-02T00:00:00.000Z", "new", "codex", "", "shell", '{"command": "make"}', "unknown")]
+        insert(self.home, rows, schema=V1_SCHEMA)
+        code, out, err = report(self.home)
+        self.assertEqual(code, 0, err)
+        self.assertIn("2 calls in 2 sessions", out)
+        code, out, err = report(self.home, "sessions", "--since", "2026-10-01")
+        self.assertEqual(code, 0, err)
+        self.assertIn("1 calls in 1 sessions since 2026-10-01", out)
+        self.assertNotIn("old", out.split("session")[-1])
+        con = sqlite3.connect(str(self.home / "tool-tracking.db"))
+        self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 0)  # read paths never write
+        con.close()
+
+
 class InstallTests(TempHome):
     def test_fragment_and_store(self):
-        for harness in ("hermes", "claude_code", "codex", "cursor"):
+        for harness in ("hermes", "claude_code", "codex", "cursor", "gemini", "copilot"):
             with self.subTest(harness=harness):
                 home = self.home / harness
                 home.mkdir()
@@ -231,6 +416,17 @@ class InstallTests(TempHome):
                 self.assertRegex(out.stdout, re.escape(str(RECORD)) + f"'? --harness {harness}")
                 self.assertTrue((home / "tool-tracking.db").exists())
                 self.assertEqual([p.name for p in home.iterdir()], ["tool-tracking.db"])
+
+    def test_timeouts_in_each_harness_unit(self):
+        def fragment(harness):
+            out = subprocess.run(["bash", str(INSTALL), harness], capture_output=True, text=True,
+                                 env={**os.environ, "AOR_HOME": str(self.home)}).stdout
+            return json.loads(out[out.index("{"):out.rindex("}") + 1])
+        self.assertEqual(fragment("gemini")["AfterTool"][0]["hooks"][0]["timeout"], 10000)  # ms
+        self.assertEqual(fragment("claude_code")["PostToolUse"][0]["hooks"][0]["timeout"], 10)  # s
+        copilot = fragment("copilot")
+        self.assertEqual(copilot["version"], 1)
+        self.assertEqual(copilot["hooks"]["postToolUse"][0]["timeoutSec"], 10)
 
 
 class ServeTests(TempHome):
@@ -353,6 +549,14 @@ class QueryTests(TempHome):
         _, rows, _ = self.query("search", "--chars", "5", "--limit", "1")
         self.assertEqual(len(rows), 1)
         self.assertRegex(rows[0]["tool_input"], r"^.{5}\.\.\.\[\+\d+\]$")
+
+    def test_cwd_filter_and_sizes(self):
+        run_record({"session_id": "p", "cwd": "/w/payments", "tool_name": "Bash",
+                    "tool_input": {"command": "make"}, "tool_response": "z" * 50}, "claude_code", self.home)
+        _, rows, _ = self.query("search", "--cwd", "payments")
+        self.assertEqual([(r["cwd"], r["output_chars"]) for r in rows], [("/w/payments", 50)])
+        _, rows, _ = self.query("schema")
+        self.assertIn("output_chars", rows[0]["columns"])
 
     def test_sql_is_read_only(self):
         code, rows, _ = self.query("sql", "SELECT kind(tool) AS k, COUNT(*) AS n FROM tool_calls GROUP BY k")
