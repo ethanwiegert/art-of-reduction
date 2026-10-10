@@ -70,6 +70,8 @@ What the log showed before: `python -m pytest` failed in 5 of 5 sessions (pytest
 
 The same real sessions, replayed as Codex, Gemini CLI, Copilot CLI, Cursor and Hermes payloads into one `serve.py` store, folded together: the test command counted once across five harnesses, and one file read through `file_path`, `path` and `absolute_path` counted as one. An earlier round (2026-10-04, 23 sessions) captured every call (31/31) and found 0 leaks of planted secrets.
 
+Rerun all of it with `python3 evals/run.py` (needs Claude Code; it runs about 20 live sessions). Each run adds a scorecard to `evals/results/`, and `ROADMAP.md` tracks the history.
+
 ## The skills
 
 ### tool-tracking
