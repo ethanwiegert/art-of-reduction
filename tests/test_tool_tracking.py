@@ -571,3 +571,58 @@ class QueryTests(TempHome):
         self.assertEqual((code, rows, err.strip()), (0, [], "(no rows)"))
         self.assertNotEqual(self.query("search", "--bogus", "1")[0], 0)
         self.assertNotEqual(self.query("trail")[0], 0)
+
+
+CODIFY = ROOT / "skills" / "lazy-automate" / "scripts" / "codify.py"
+
+
+class CodifyTests(TempHome):
+    def log(self, *steps):
+        """The same steps, in order, in three sessions: (command, status)."""
+        rows = []
+        for n, session in enumerate(("a", "b", "c")):
+            rows += [(f"2026-10-0{n + 1}T00:00:{i:02}.000Z", session, "claude_code", "/w/app", "Bash",
+                      json.dumps({"command": f"cd /w/app && {command}"}), status)
+                     for i, (command, status) in enumerate(steps)]
+        insert(self.home, rows)
+
+    def codify(self, *args, cwd=None):
+        out = subprocess.run([sys.executable, str(CODIFY), *args], capture_output=True, text=True,
+                             cwd=cwd, env={**os.environ, "AOR_HOME": str(self.home)})
+        return out.returncode, out.stdout, out.stderr
+
+    def test_drops_the_wrong_first_try_and_output_plumbing(self):
+        self.log(("python -m pytest", "error"), ("python3 -m unittest discover tests 2>&1 | tail -5", "success"),
+                 ("ruff check .", "success"))
+        code, out, err = self.codify()
+        self.assertEqual(code, 0, err)
+        self.assertIn("( python3 -m unittest discover tests )\n( ruff check . )", out)
+        self.assertNotIn("pytest )", out)
+        self.assertIn("saves 2 turns a run", out)
+
+    def test_refuses_steps_a_rerun_cannot_undo(self):
+        for step in ("git push origin main", "pip install requests", "rm -rf build", "echo hi > notes.txt",
+                     "curl -s https://example.com", "deploy --token [redacted]"):
+            with self.subTest(step=step):
+                (self.home / "tool-tracking.db").unlink(missing_ok=True)
+                self.log(("make build", "success"), (step, "success"))
+                code, out, err = self.codify()
+                self.assertNotEqual(code, 0)
+                self.assertIn("refused", err)
+
+    def test_writes_only_what_runs_clean(self):
+        project = self.home / "app"
+        project.mkdir()
+        (project / "ok.txt").write_text("x")
+        self.log(("test -f ok.txt", "success"), ("echo checked", "success"))
+        target = project / "scripts" / "check"
+        code, out, err = self.codify("--write", str(target), cwd=project)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(os.access(target, os.X_OK))
+        self.assertIn("Add to AGENTS.md", out)
+        (project / "ok.txt").unlink()  # the logged runs passed; this one would not
+        target.unlink()
+        code, out, err = self.codify("--write", str(target), cwd=project)
+        self.assertNotEqual(code, 0)
+        self.assertIn("not written", err)
+        self.assertFalse(target.exists())
