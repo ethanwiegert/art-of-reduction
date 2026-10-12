@@ -618,7 +618,8 @@ class CodifyTests(TempHome):
         refused = ("git push origin main", "git add -A", "git -C x push", "pip install requests", "npm ci",
                    "rm -rf build", "touch marker", "sed -i s/a/b/ f", "eslint --fix .", "make install",
                    "echo hi > notes.txt", "cat a &> b", "curl -s https://example.com", "echo $(curl x)",
-                   "deploy --token [redacted]")
+                   "deploy --token [redacted]", "pytest\nrm -rf x", "make test deploy", "cat f >| g",
+                   "pytest &", "ls >(tee f)", "git diff --output=f", "rg --pre sh x", "tsc", "tail -f log")
         for step in refused:
             with self.subTest(step=step):
                 (self.home / "tool-tracking.db").unlink(missing_ok=True)
@@ -628,7 +629,8 @@ class CodifyTests(TempHome):
                 self.assertIn("refused", err)
                 self.assertFalse((self.app / "scripts").exists())
         for step in ("git log -- mv.py", "grep -r 'a>b' .", "python -m pytest -k kill", "npm run build",
-                     "pytest -q >/dev/null 2>&1", "FOO=1 pytest"):
+                     "pytest -q >/dev/null 2>&1", "FOO=1 pytest", "grep -i x f", "git diff -w",
+                     "make test V=1", "tsc --noEmit"):
             with self.subTest(step=step):
                 (self.home / "tool-tracking.db").unlink(missing_ok=True)
                 self.log(("make test", "success"), (step, "success"))

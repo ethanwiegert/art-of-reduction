@@ -57,13 +57,41 @@ SAFE = {
     "make": {"test", "check", "lint"},
     "git": {"status", "diff", "log", "show"},
 }
-WRITES = {"--fix", "--write", "--fix-only", "--in-place", "-i", "-w", "--delete", "--update-snapshots", "-u"}
+# Flags that write, execute or load code, matched as `flag` or `flag=value`.
+WRITES = {"--fix", "--fix-only", "--write", "--in-place", "--delete", "--update-snapshots",
+          "--output", "--ext-diff", "--textconv", "--pre", "--add-noqa"}
+PROGRAM_WRITES = {"jest": {"-u"}, "vitest": {"-u"}, "go": {"-o"}, "pytest": {"-p"},
+                  "python": {"-p"}, "tail": {"-f", "-F", "--follow"}}
+# Runners whose extra arguments are more targets or scripts to run.
+ONE_TARGET = {"make", "npm", "yarn", "pnpm"}
+
+
+def step_unsafe(words: list) -> str:
+    while words and "=" in words[0]:
+        words = words[1:]  # FOO=1 pytest
+    if not words:
+        return ""
+    program = re.sub(r"^python[\d.]*$", "python", os.path.basename(words[0]))
+    allowed = SAFE.get(program, ())
+    if allowed is not None:
+        sub = next((sub.split() for sub in allowed if words[1:1 + len(sub.split())] == sub.split()), None)
+        if sub is None:
+            return f"`{program}` is not on the read/check list"
+        extra = words[1 + len(sub):]
+        if program in ONE_TARGET and any(not w.startswith("-") and "=" not in w for w in extra):
+            return f"`{program}` with more targets"
+    flags = WRITES | PROGRAM_WRITES.get(program, set())
+    if any(w.split("=", 1)[0] in flags for w in words):
+        return f"`{program}` with a flag that writes or runs code"
+    if program == "tsc" and "--noEmit" not in words:
+        return "`tsc` without --noEmit writes files"
+    return ""
 
 
 def unsafe(command: str) -> str:
     """Why a command is not safe to rerun unattended, or '' when it only reads or checks."""
-    if "[redacted" in command or "$(" in command or "`" in command:
-        return "substitution or redacted value"
+    if "[redacted" in command or "$(" in command or "`" in command or "\n" in command:
+        return "substitution, line break or redacted value"
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
@@ -72,18 +100,12 @@ def unsafe(command: str) -> str:
         return "unbalanced quotes"
     words = []
     for index, token in enumerate(tokens + [";"]):
+        if token in {"&", "|&", ">|"} or "(" in token or ")" in token:
+            return "background job, subshell or forced redirect"
         if token in report.SEPARATORS or token in {"&&", "||", ";;"}:
-            while words and "=" in words[0]:
-                words.pop(0)  # FOO=1 pytest
-            if words:
-                program = re.sub(r"^python[\d.]*$", "python", os.path.basename(words[0]))
-                rest = " ".join(words[1:3])
-                allowed = SAFE.get(program, ())
-                if allowed is not None and not any(rest == sub or rest.startswith(sub + " ")
-                                               for sub in allowed or ()):
-                    return f"`{program}` is not on the read/check list"
-                if WRITES & set(words):
-                    return f"`{program}` with a write flag"
+            reason = step_unsafe(words)
+            if reason:
+                return reason
             words = []
         elif ">" in token and set(token) <= set("<>&"):
             target = tokens[index + 1] if index + 1 < len(tokens) else ""
