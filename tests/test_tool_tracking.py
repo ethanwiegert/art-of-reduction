@@ -577,18 +577,23 @@ CODIFY = ROOT / "skills" / "lazy-automate" / "scripts" / "codify.py"
 
 
 class CodifyTests(TempHome):
-    def log(self, *steps):
-        """The same steps, in order, in three sessions: (command, status)."""
+    def setUp(self):
+        super().setUp()
+        self.app = self.home / "app"  # codify reads calls logged under a directory of this name
+        self.app.mkdir()
+
+    def log(self, *steps, cwd="/w/app", sessions=("a", "b", "c")):
+        """The same steps, in order, in each session: (command, status)."""
         rows = []
-        for n, session in enumerate(("a", "b", "c")):
-            rows += [(f"2026-10-0{n + 1}T00:00:{i:02}.000Z", session, "claude_code", "/w/app", "Bash",
-                      json.dumps({"command": f"cd /w/app && {command}"}), status)
+        for n, session in enumerate(sessions):
+            rows += [(f"2026-10-0{n + 1}T00:00:{i:02}.000Z", session, "claude_code", cwd, "Bash",
+                      json.dumps({"command": f"cd {cwd} && {command}"}), status)
                      for i, (command, status) in enumerate(steps)]
         insert(self.home, rows)
 
-    def codify(self, *args, cwd=None):
+    def codify(self, *args):
         out = subprocess.run([sys.executable, str(CODIFY), *args], capture_output=True, text=True,
-                             cwd=cwd, env={**os.environ, "AOR_HOME": str(self.home)})
+                             cwd=self.app, env={**os.environ, "AOR_HOME": str(self.home)})
         return out.returncode, out.stdout, out.stderr
 
     def test_drops_the_wrong_first_try_and_output_plumbing(self):
@@ -600,29 +605,48 @@ class CodifyTests(TempHome):
         self.assertNotIn("pytest )", out)
         self.assertIn("saves 2 turns a run", out)
 
-    def test_refuses_steps_a_rerun_cannot_undo(self):
-        for step in ("git push origin main", "pip install requests", "rm -rf build", "echo hi > notes.txt",
-                     "curl -s https://example.com", "deploy --token [redacted]"):
+    def test_only_this_projects_calls(self):
+        self.log(("pytest tests/ -q", "success"), ("ruff check src", "success"), sessions=("a", "b"))
+        self.log(("pytest other/ -x", "success"), ("ruff check lib", "success"),
+                 cwd="/home/bo/elsewhere", sessions=("c", "d", "e"))
+        code, out, err = self.codify()
+        self.assertEqual(code, 0, err)
+        self.assertIn("( pytest tests/ -q )\n( ruff check src )", out)
+        self.assertNotIn("lib", out)
+
+    def test_scripts_only_read_and_check_commands(self):
+        refused = ("git push origin main", "git add -A", "git -C x push", "pip install requests", "npm ci",
+                   "rm -rf build", "touch marker", "sed -i s/a/b/ f", "eslint --fix .", "make install",
+                   "echo hi > notes.txt", "cat a &> b", "curl -s https://example.com", "echo $(curl x)",
+                   "deploy --token [redacted]")
+        for step in refused:
             with self.subTest(step=step):
                 (self.home / "tool-tracking.db").unlink(missing_ok=True)
-                self.log(("make build", "success"), (step, "success"))
-                code, out, err = self.codify()
+                self.log(("make test", "success"), (step, "success"))
+                code, out, err = self.codify("--write", "scripts/check")
                 self.assertNotEqual(code, 0)
                 self.assertIn("refused", err)
+                self.assertFalse((self.app / "scripts").exists())
+        for step in ("git log -- mv.py", "grep -r 'a>b' .", "python -m pytest -k kill", "npm run build",
+                     "pytest -q >/dev/null 2>&1", "FOO=1 pytest"):
+            with self.subTest(step=step):
+                (self.home / "tool-tracking.db").unlink(missing_ok=True)
+                self.log(("make test", "success"), (step, "success"))
+                code, out, err = self.codify()
+                self.assertEqual(code, 0, err)
 
     def test_writes_only_what_runs_clean(self):
-        project = self.home / "app"
-        project.mkdir()
-        (project / "ok.txt").write_text("x")
+        (self.app / "ok.txt").write_text("x")
         self.log(("test -f ok.txt", "success"), ("echo checked", "success"))
-        target = project / "scripts" / "check"
-        code, out, err = self.codify("--write", str(target), cwd=project)
+        target = self.app / "scripts" / "check"
+        code, out, err = self.codify("--write", "scripts/check")
         self.assertEqual(code, 0, err)
         self.assertTrue(os.access(target, os.X_OK))
         self.assertIn("Add to AGENTS.md", out)
-        (project / "ok.txt").unlink()  # the logged runs passed; this one would not
+        (self.app / "ok.txt").unlink()  # the logged runs passed; this one would not
         target.unlink()
-        code, out, err = self.codify("--write", str(target), cwd=project)
+        code, out, err = self.codify("--write", "scripts/check")
         self.assertNotEqual(code, 0)
         self.assertIn("not written", err)
         self.assertFalse(target.exists())
+        self.assertIn("needs a path", self.codify("--write")[2])

@@ -218,7 +218,8 @@ def tokens(chars) -> int:
     return round((chars or 0) / CHARS_PER_TOKEN)
 
 
-def connect(since: str = "") -> sqlite3.Connection:
+def connect(since: str = "", project: str = "") -> sqlite3.Connection:
+    """Read-only. `project`: only calls whose working directory has that name."""
     if not os.path.exists(DB_PATH):
         sys.exit(f"no database at {DB_PATH} - set AOR_HOME or run tool-tracking's scripts/install.sh")
     con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
@@ -230,12 +231,16 @@ def connect(since: str = "") -> sqlite3.Connection:
         for name, default in (("cwd", "''"), ("input_chars", "NULL"), ("output_chars", "NULL"))
         if name not in have
     )
-    if missing or since:
+    if missing or since or project:
         # A temp view shadows the table for this connection only: every query sees
         # the columns a not-yet-upgraded store lacks, and only calls since `since`.
-        quoted = "'" + since.replace("'", "''") + "'"
+        quote = lambda text: "'" + text.replace("'", "''") + "'"
+        where = f"ts >= {quote(since)}"
+        if project:
+            where += (f" AND (cwd = {quote(project)}"
+                      f" OR substr(cwd, -{len(project) + 1}) = {quote('/' + project)})")
         con.execute(f"CREATE TEMP VIEW tool_calls AS SELECT *{missing}"
-                    f" FROM main.tool_calls WHERE ts >= {quoted}")
+                    f" FROM main.tool_calls WHERE {where}")
     return con
 
 

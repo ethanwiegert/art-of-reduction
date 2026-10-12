@@ -40,7 +40,7 @@ python3 <lazy-automate>/scripts/codify.py                        # the top shell
 python3 <lazy-automate>/scripts/codify.py --write scripts/check  # run it once; keep it only if it exits 0
 ```
 
-It uses the command agents ran most often for each step, drops a step that failed in most runs (the wrong first try), and removes output plumbing. It refuses any step that installs, deletes, pushes, deploys, writes through a redirect, reaches the network, or holds a redacted value. Add the `AGENTS.md` line it prints. Build anything else, such as reads, project maps or wrappers, by hand.
+It uses the command agents ran most often for each step, drops a step that failed in most runs (the wrong first try), and removes output plumbing. It reads only calls logged in a directory with the project's name. It scripts only read and check commands, such as tests, linters without `--fix`, type checks, builds and read-only git. It refuses everything else, along with redirects into files, and leaves those for you to write by hand. Add the `AGENTS.md` line it prints. Build anything else, such as reads, project maps or wrappers, by hand.
 
 Before building by hand, pull a few real examples of the candidate with the `tool-log-search` skill (`query.py search --input "<command>" --limit 5`) so the script handles the inputs that actually occur.
 

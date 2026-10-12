@@ -92,7 +92,7 @@ python3 skills/tool-log-search/scripts/query.py trail <session_id>
 ```
 
 ### lazy-automate
-The rule of two: the second time the same work appears, it becomes a script, a hook, or a config change so no model is needed for it again. It picks candidates from the log, not from memory, matches each pattern to an artifact (a workflow becomes one script, a command agents get wrong becomes one line in `AGENTS.md`), and checks afterwards that calls per session went down. `scripts/codify.py` writes the shell workflow scripts itself. It keeps a script only if it runs clean, and it refuses steps a rerun can't undo, such as installs, deletes, pushes or network calls.
+The rule of two: the second time the same work appears, it becomes a script, a hook, or a config change so no model is needed for it again. It picks candidates from the log, not from memory, matches each pattern to an artifact (a workflow becomes one script, a command agents get wrong becomes one line in `AGENTS.md`), and checks afterwards that calls per session went down. `scripts/codify.py` writes the shell workflow scripts itself. It scripts only read and check commands, such as tests, linters and builds, and keeps a script only if it runs clean.
 
 ### art-of-reduction
 Reviews the current change set and removes concepts rather than characters: delete what is unused, merge what does two jobs, question the dependency, with guardrails so a reduction never changes behavior or strips error handling.

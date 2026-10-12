@@ -4,7 +4,10 @@
     python3 codify.py                       # show the script for the top candidate
     python3 codify.py --write scripts/check # run it once; write it only if it works
 
-Run from the project root: the log stores commands relative to it.
+Run from the project root. Only calls logged in a directory with the same
+name count (paths differ across machines; names do not), and the log stores
+commands relative to that directory. A harness that sends no directory
+(Hermes) is left out.
 
 A candidate is the top `report.py workflows` row with 2+ shell steps, or else
 the shell call repeated in the most sessions under 2+ spellings. Each step
@@ -13,9 +16,11 @@ becomes the full command agents ran most often for it, minus output plumbing
 was the wrong first try the script exists to skip. Read, edit and search steps
 stay with the agent; they are judgment.
 
-Refused, never written: a step that installs, deletes, pushes, deploys, writes
-through a redirect, reaches the network, or carries a redacted value. A
-script that repeats one of those unattended can do damage no rerun undoes.
+Only read and check commands are scripted: tests, linters without --fix,
+type checks, builds, and read-only git and file commands (SAFE below). Any
+other program, a redirect into a file, command substitution or a redacted
+value is refused, never run: a script that repeats an install, delete, push
+or network call unattended can do damage no rerun undoes. Write those by hand.
 
 --write runs the script with `sh` and keeps it only when it exits 0, as the
 logged runs did. It prints the line to add to the instructions file agents
@@ -28,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from collections import Counter
@@ -37,15 +43,58 @@ SCRIPTS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 sys.path.insert(0, os.path.normpath(SCRIPTS))
 import report  # noqa: E402  the same folding and workflows the reports show
 
-UNSAFE = re.compile(
-    r"\b(?:rm|rmdir|mv|dd|mkfs|chmod|chown|sudo|su|kill|pkill|shutdown|reboot|ssh|scp|rsync"
-    r"|curl|wget|deploy|kubectl|terraform|helm|ansible\S*)\b"
-    r"|\bgit\s+(?:push|commit|reset|clean|checkout|switch|rebase|merge|tag|stash|rm|mv|restore)\b"
-    r"|\b(?:pip3?|npm|pnpm|yarn|gem|cargo|go|brew|apt(?:-get)?|uv|poetry)\s+(?:install|add|publish|remove|uninstall|get)\b"
-    r"|\bdocker\s+(?:push|rm|rmi|run|compose)\b"
-    r"|(?<![0-9&])>(?!&|\s*/dev/null)"  # writes a file; 2>&1 and >/dev/null are fine
-    r"|\[redacted"
-)
+# program -> the subcommands that only read or check (None: any arguments).
+SAFE = {
+    **dict.fromkeys(("pytest", "mypy", "tsc", "flake8", "pylint", "eslint", "jest", "vitest",
+                     "cat", "head", "tail", "wc", "ls", "grep", "rg", "echo", "test", "true",
+                     "pwd", "diff", "cd"), None),
+    "python": {"-m pytest", "-m unittest", "-m mypy", "-m flake8", "-m pylint"},
+    "ruff": {"check"},
+    **dict.fromkeys(("npm", "yarn", "pnpm"),
+                    {"test", "run test", "run lint", "run build", "run check", "run typecheck"}),
+    "cargo": {"test", "check", "clippy", "build"},
+    "go": {"test", "vet", "build"},
+    "make": {"test", "check", "lint"},
+    "git": {"status", "diff", "log", "show"},
+}
+WRITES = {"--fix", "--write", "--fix-only", "--in-place", "-i", "-w", "--delete", "--update-snapshots", "-u"}
+
+
+def unsafe(command: str) -> str:
+    """Why a command is not safe to rerun unattended, or '' when it only reads or checks."""
+    if "[redacted" in command or "$(" in command or "`" in command:
+        return "substitution or redacted value"
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return "unbalanced quotes"
+    words = []
+    for index, token in enumerate(tokens + [";"]):
+        if token in report.SEPARATORS or token in {"&&", "||", ";;"}:
+            while words and "=" in words[0]:
+                words.pop(0)  # FOO=1 pytest
+            if words:
+                program = re.sub(r"^python[\d.]*$", "python", os.path.basename(words[0]))
+                rest = " ".join(words[1:3])
+                allowed = SAFE.get(program, ())
+                if allowed is not None and not any(rest == sub or rest.startswith(sub + " ")
+                                               for sub in allowed or ()):
+                    return f"`{program}` is not on the read/check list"
+                if WRITES & set(words):
+                    return f"`{program}` with a write flag"
+            words = []
+        elif ">" in token and set(token) <= set("<>&"):
+            target = tokens[index + 1] if index + 1 < len(tokens) else ""
+            if not (target == "/dev/null" or (token.endswith("&") and target.isdigit())):
+                return "redirect into a file"
+            words = words[:-1] if words and words[-1].isdigit() else words
+        elif not set(token) <= set("<>&"):
+            words.append(token)
+    return ""
+
+
 HERE = re.compile(r"^cd \.\s*&&\s*")
 
 
@@ -99,17 +148,24 @@ def main(argv: list) -> None:
     if "-h" in argv or "--help" in argv:
         print(__doc__.strip())
         return
-    target = argv[argv.index("--write") + 1] if "--write" in argv[:-1] else ""
-    found = candidate(report.connect())
+    target = ""
+    if "--write" in argv:
+        if argv[-1] == "--write":
+            sys.exit("--write needs a path, e.g. --write scripts/check")
+        target = argv[argv.index("--write") + 1]
+    project = os.path.basename(os.getcwd())
+    print(f"project: {project} (calls logged in a directory of that name)")
+    found = candidate(report.connect(project=project))
     if not found:
         sys.exit("no candidate yet: no shell workflow or command repeats across 2+ sessions")
     steps, runs, sessions, saves, replaces = found
-    unsafe = [step for step in steps if UNSAFE.search(step)]
+    refused = [f"{step}  ({unsafe(step)})" for step in steps if unsafe(step)]
     print(f"replaces: {replaces}")
     if saves:
         print(f"seen {runs} times in {sessions} sessions; one call instead of {saves + 1} saves {saves} turns a run")
-    if unsafe:
-        sys.exit("refused: these steps change things a rerun cannot undo:\n  " + "\n  ".join(unsafe))
+    if refused:
+        sys.exit("refused: only read and check commands are scripted; write these by hand:\n  "
+                 + "\n  ".join(refused))
     script = "#!/bin/sh\n# Written by codify.py from the tool-call log.\nset -e\n" + "".join(
         f"( {step} )\n" for step in steps)
     print("\n" + script)
