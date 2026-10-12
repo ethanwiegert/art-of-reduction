@@ -59,18 +59,20 @@ SAFE = {
 }
 # Flags that write, execute or load code, matched as `flag` or `flag=value`.
 WRITES = {"--fix", "--fix-only", "--write", "--in-place", "--delete", "--update-snapshots",
-          "--output", "--ext-diff", "--textconv", "--pre", "--add-noqa"}
-PROGRAM_WRITES = {"jest": {"-u"}, "vitest": {"-u"}, "go": {"-o"}, "pytest": {"-p"},
+          "--output", "--output-file", "--ext-diff", "--textconv", "--pre", "--search-zip",
+          "--add-noqa", "--junit-xml", "--junitxml", "--basetemp"}
+PROGRAM_WRITES = {"jest": {"-u"}, "vitest": {"-u"}, "eslint": {"-o"}, "rg": {"-z"},
+                  "go": {"-o", "-exec", "-toolexec", "-vettool"}, "pytest": {"-p"},
                   "python": {"-p"}, "tail": {"-f", "-F", "--follow"}}
 # Runners whose extra arguments are more targets or scripts to run.
 ONE_TARGET = {"make", "npm", "yarn", "pnpm"}
 
 
 def step_unsafe(words: list) -> str:
-    while words and "=" in words[0]:
-        words = words[1:]  # FOO=1 pytest
     if not words:
         return ""
+    if "=" in words[0]:
+        return "environment prefix (PYTHONPATH=, LD_PRELOAD= change what runs)"
     program = re.sub(r"^python[\d.]*$", "python", os.path.basename(words[0]))
     allowed = SAFE.get(program, ())
     if allowed is not None:
