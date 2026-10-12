@@ -136,7 +136,7 @@ def commands(con) -> dict:
             command = command[2] if len(command) > 2 and command[1] in ("-c", "-lc") else " ".join(map(str, command))
         if not isinstance(command, str) or not command.strip():
             continue
-        command = report.WHITESPACE.sub(" ", report.OUTPUT_TRIM.sub("", command)).strip()
+        command = re.sub(r"[ \t]+", " ", report.OUTPUT_TRIM.sub("", command)).strip()  # a line break stays: it is a second command
         command = HERE.sub("", command)  # the script runs from the project root already
         forms.setdefault(sig, Counter())[command, row["status"] == "error"] += 1
         errors[sig] += row["status"] == "error"
