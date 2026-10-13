@@ -33,7 +33,16 @@ Match what the log shows to the artifact:
 | The same files read at the start of most sessions | A short project map in that file, so the agent reads less to orient |
 | High `~tok` per call: a noisy command | A wrapper that prints only what the agent acts on (failures, a summary) |
 
-Before building, pull a few real examples of the candidate with the `tool-log-search` skill (`query.py search --input "<command>" --limit 5`) so the script handles the inputs that actually occur.
+For the shell rows, let the script do it. Run this from the project root:
+
+```
+python3 <lazy-automate>/scripts/codify.py                        # the top shell workflow as a script, dry run
+python3 <lazy-automate>/scripts/codify.py --write scripts/check  # run it once; keep it only if it exits 0
+```
+
+It uses the command agents ran most often for each step, drops a step that failed in most runs (the wrong first try), and removes output plumbing. It reads only calls logged in a directory with the project's name. It scripts only read and check commands, such as tests, linters without `--fix`, type checks, builds and read-only git. It refuses everything else, along with redirects into files, and leaves those for you to write by hand. Add the `AGENTS.md` line it prints. Build anything else, such as reads, project maps or wrappers, by hand.
+
+Before building by hand, pull a few real examples of the candidate with the `tool-log-search` skill (`query.py search --input "<command>" --limit 5`) so the script handles the inputs that actually occur.
 
 Without the database, look for: the same sequence of steps run for a new input; the same file edited the same way; the same manual check after every change.
 

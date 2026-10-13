@@ -218,7 +218,8 @@ def tokens(chars) -> int:
     return round((chars or 0) / CHARS_PER_TOKEN)
 
 
-def connect(since: str = "") -> sqlite3.Connection:
+def connect(since: str = "", project: str = "") -> sqlite3.Connection:
+    """Read-only. `project`: only calls whose working directory has that name."""
     if not os.path.exists(DB_PATH):
         sys.exit(f"no database at {DB_PATH} - set AOR_HOME or run tool-tracking's scripts/install.sh")
     con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
@@ -230,12 +231,16 @@ def connect(since: str = "") -> sqlite3.Connection:
         for name, default in (("cwd", "''"), ("input_chars", "NULL"), ("output_chars", "NULL"))
         if name not in have
     )
-    if missing or since:
+    if missing or since or project:
         # A temp view shadows the table for this connection only: every query sees
         # the columns a not-yet-upgraded store lacks, and only calls since `since`.
-        quoted = "'" + since.replace("'", "''") + "'"
+        quote = lambda text: "'" + text.replace("'", "''") + "'"
+        where = f"ts >= {quote(since)}"
+        if project:
+            where += (f" AND (cwd = {quote(project)}"
+                      f" OR substr(cwd, -{len(project) + 1}) = {quote('/' + project)})")
         con.execute(f"CREATE TEMP VIEW tool_calls AS SELECT *{missing}"
-                    f" FROM main.tool_calls WHERE ts >= {quoted}")
+                    f" FROM main.tool_calls WHERE {where}")
     return con
 
 
@@ -329,8 +334,8 @@ def section_repeats(con, minimum: int, limit: int) -> None:
     )
 
 
-def section_workflows(con, minimum: int, limit: int) -> None:
-    print(f"\n== workflows: the same calls in the same order (>= {minimum} runs, 2+ sessions) ==")
+def find_workflows(con, minimum: int) -> list:
+    """(saves, steps, sessions, runs, sequence of 'kind signature' steps), best first."""
     trails = defaultdict(list)
     for row in con.execute(
         "SELECT session_id, tool, cwd, tool_input FROM tool_calls"
@@ -367,16 +372,21 @@ def section_workflows(con, minimum: int, limit: int) -> None:
         for part in (gram[1:], gram[:-1]):
             covered[part] = max(covered[part], count)
     workflows = [
-        ((len(gram) - 1) * runs[gram], len(gram), count, runs[gram],
-         " -> ".join(step[:48] for step in gram))
+        ((len(gram) - 1) * runs[gram], len(gram), count, runs[gram], gram)
         for gram, count in found.items() if covered[gram] < count
     ]
     # One script call instead of N steps saves N-1 turns every run.
     workflows.sort(key=lambda item: (-item[0], -item[2], item[4]))
+    return workflows
+
+
+def section_workflows(con, minimum: int, limit: int) -> None:
+    print(f"\n== workflows: the same calls in the same order (>= {minimum} runs, 2+ sessions) ==")
     print(
         table(
             ("saves", "steps", "sessions", "runs", "sequence"),
-            workflows[:limit],
+            [(*row[:4], " -> ".join(step[:48] for step in row[4]))
+             for row in find_workflows(con, minimum)[:limit]],
             empty="(no cross-session workflows yet)",
         )
     )

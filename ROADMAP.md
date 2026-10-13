@@ -29,12 +29,11 @@ Guardrails:
 
 Items are ranked. Each one names the claim it serves.
 
-1. **Codify as a script** (3). `lazy-automate` is prose today. Build a stdlib script that takes the top `workflows` row, drafts the script, runs it, and keeps it only if it reproduces the calls' result. It refuses calls with irreversible side effects, such as push, deploy, rm or network writes (the TraceCompiler guardrail).
-2. **Payoff as a command** (2, 3). Turn the "check it paid off" step into `report.py payoff --since TS`: calls per session and the targeted workflow, before and after.
-3. **Fold command variants** (1, 2). `cd x && npm test` and `npm test` count as separate repeats today. Fold them so repeats are not under-counted.
-4. **Portable output** (1, 3). Emit what Codify builds as an `AGENTS.md` line plus a script, so every harness picks it up, not only Claude Code.
-5. **Fallback rows reach the shared store** (1). Rows written locally when `serve.py` was down never get forwarded. Send them on the next successful forward.
-6. **Verify Cursor live** (1). Cursor's payload shape comes from its docs and has never been checked against a live run.
+1. **Payoff as a command** (2, 3). Turn the "check it paid off" step into `report.py payoff --since TS`: calls per session and the targeted workflow, before and after.
+2. **Fold command variants** (1, 2). `cd x && npm test` and `npm test` count as separate repeats today. Fold them so repeats are not under-counted.
+3. **Portable output** (1, 3). Emit what Codify builds as an `AGENTS.md` line plus a script, so every harness picks it up, not only Claude Code.
+4. **Fallback rows reach the shared store** (1). Rows written locally when `serve.py` was down never get forwarded. Send them on the next successful forward.
+5. **Verify Cursor live** (1). Cursor's payload shape comes from its docs and has never been checked against a live run.
 
 ## Not now
 
@@ -44,9 +43,11 @@ Dashboards and a docs site, a Share layer or MCP server, SSO and access control,
 
 - Record layer for six harnesses, shared ingest, redaction (PRs #1 to #5).
 - Repeats and workflows ranked by turns saved; measured −40% turns (PR #6).
+- Codify as a script: `lazy-automate/scripts/codify.py` turns the top shell workflow into a script, keeps it only if it runs clean, and refuses steps with irreversible side effects (loop week 1).
 
 ## Scorecard history
 
 | Date | Item | Turns saved | Harnesses folded | Leaks |
 |---|---|---|---|---|
 | 2026-10-05 | baseline (manual run, README) | 40% | 5 replayed + Claude Code | 0 |
+| 2026-10-12 | Codify as a script | not measured (live sessions blocked) | not measured | not measured; unit tests 33 OK |

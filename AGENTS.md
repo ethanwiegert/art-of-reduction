@@ -10,7 +10,7 @@ Four agent skills that record every tool call an agent makes, find the calls and
 skills/
   tool-tracking/    record + report. schema.sql, scripts/{install.sh, record.py, serve.py, report.py}
   tool-log-search/  read-only queries over the log. scripts/query.py (imports report.py's kind folding)
-  lazy-automate/    instructions only: turn repeats into scripts
+  lazy-automate/    turn repeats into scripts. scripts/codify.py (top shell workflow -> verified script)
   art-of-reduction/ instructions only: shrink change sets
 tests/test_tool_tracking.py   all tests, stdlib unittest
 evals/run.py                  field test: live Claude Code sessions + replays, scored; results in evals/results/
@@ -25,6 +25,7 @@ python3 -m unittest discover tests                          # run all tests (fro
 bash skills/tool-tracking/scripts/install.sh <harness>      # claude_code | codex | cursor | gemini | copilot | hermes | none
 python3 skills/tool-tracking/scripts/report.py [tools|repeats|workflows|failures|sessions] [--since TS]
 python3 skills/tool-log-search/scripts/query.py schema|search|trail <id>|sql "<SELECT>"
+python3 skills/lazy-automate/scripts/codify.py [--write PATH]  # from the project root
 python3 skills/tool-tracking/scripts/serve.py [--host H --port P]   # default 127.0.0.1:8787
 python3 evals/run.py [--model sonnet] [--runs 2]           # field test; needs `claude`, costs tokens
 ```
